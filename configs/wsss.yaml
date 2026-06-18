@@ -1,0 +1,32 @@
+station: WSSS
+timezone: Asia/Singapore
+cutoff_local: "12:00"
+complete_day_min_local: "23:00"
+target: tmax
+
+input_csv: WSSS.csv
+input_db: artifacts/observations.duckdb
+prefer_duckdb: true
+raw_csv_files:
+  - asos.csv
+  - RJTT.csv
+  - WSSS.csv
+
+heat_risk_cutoffs:
+  - "09:00"
+  - "10:00"
+  - "11:00"
+  - "12:00"
+  - "13:00"
+heat_risk_thresholds_c:
+  - 30.0
+  - 32.0
+  - 34.0
+  - 36.0
+heat_risk_dataset_parquet: artifacts/wsss_heat_risk_dataset.parquet
+heat_risk_model_path: artifacts/wsss_heat_risk_model.joblib
+heat_risk_metrics_path: artifacts/wsss_heat_risk_metrics.json
+
+test_fraction: 0.2
+random_state: 42
+feature_missing_threshold: 0.85

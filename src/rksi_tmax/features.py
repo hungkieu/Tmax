@@ -8,6 +8,7 @@ import pandas as pd
 import polars as pl
 
 from rksi_tmax.config import ProjectConfig
+from rksi_tmax.storage import read_station_observations_from_duckdb
 
 
 NUMERIC_COLUMNS = [
@@ -50,13 +51,6 @@ def fahrenheit_to_celsius(series: pd.Series) -> pd.Series:
 
 def load_observations(input_csv: str | Path, config: ProjectConfig) -> pd.DataFrame:
     """Read only the configured station from the large ASOS CSV."""
-    lazy = pl.scan_csv(
-        input_csv,
-        null_values=["null", "M", ""],
-        infer_schema_length=10_000,
-        ignore_errors=True,
-    )
-    schema_names = set(lazy.collect_schema().names())
     wanted = [
         "station",
         "valid",
@@ -65,6 +59,21 @@ def load_observations(input_csv: str | Path, config: ProjectConfig) -> pd.DataFr
         "wxcodes",
         "metar",
     ]
+    if config.prefer_duckdb and Path(config.input_db).exists() and Path(input_csv) == config.input_csv:
+        observations = read_station_observations_from_duckdb(
+            config.input_db,
+            config.station,
+            wanted,
+        )
+        return _finalize_observations(observations, config)
+
+    lazy = pl.scan_csv(
+        input_csv,
+        null_values=["null", "M", ""],
+        infer_schema_length=10_000,
+        ignore_errors=True,
+    )
+    schema_names = set(lazy.collect_schema().names())
     selected = [column for column in wanted if column in schema_names]
 
     numeric_present = [column for column in NUMERIC_COLUMNS if column in selected]
@@ -91,6 +100,19 @@ def load_observations(input_csv: str | Path, config: ProjectConfig) -> pd.DataFr
     return observations.to_pandas()
 
 
+def _finalize_observations(observations: pd.DataFrame, config: ProjectConfig) -> pd.DataFrame:
+    frame = observations.copy()
+    numeric_present = [column for column in NUMERIC_COLUMNS if column in frame.columns]
+    for column in numeric_present:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame["valid_local"] = (
+        pd.to_datetime(frame["valid"], format="%Y-%m-%d %H:%M", errors="coerce", utc=True)
+        .dt.tz_convert(config.timezone)
+    )
+    frame = frame.dropna(subset=["valid_local"]).sort_values("valid_local").reset_index(drop=True)
+    return frame
+
+
 def make_daily_dataset(observations: pd.DataFrame, config: ProjectConfig) -> pd.DataFrame:
     data = observations.copy()
     data["valid_local"] = pd.to_datetime(data["valid_local"])
@@ -108,6 +130,8 @@ def make_daily_dataset(observations: pd.DataFrame, config: ProjectConfig) -> pd.
         )
         .sort_values("local_date")
     )
+    tmax_times = _tmax_time_features(data)
+    target = target.merge(tmax_times, on="local_date", how="left")
     complete_mask = target["last_full_day_minute"] >= config.complete_day_min_minutes
     target["target_complete"] = complete_mask.astype(int)
     incomplete_columns = ["tmax_f", "tmin_f"]
@@ -138,22 +162,92 @@ def make_daily_dataset(observations: pd.DataFrame, config: ProjectConfig) -> pd.
     features["tmpc_max_to_cutoff"] = fahrenheit_to_celsius(features["tmpf_max_to_cutoff"])
     features["tmpc_min_to_cutoff"] = fahrenheit_to_celsius(features["tmpf_min_to_cutoff"])
 
+    phase_features = _phase_plateau_features(morning, config.cutoff_minutes)
     cloud_features = _cloud_features(morning)
     weather_features = _weather_code_features(morning)
     wind_features = _wind_direction_features(morning)
+    suppression_features = _weather_suppression_features(morning, config.cutoff_minutes)
+    features = features.merge(phase_features, on="local_date", how="left")
     features = features.merge(cloud_features, on="local_date", how="left")
     features = features.merge(weather_features, on="local_date", how="left")
     features = features.merge(wind_features, on="local_date", how="left")
+    features = features.merge(suppression_features, on="local_date", how="left")
 
     dataset = features.merge(target, on="local_date", how="left").sort_values("local_date")
     dataset["target_complete"] = dataset["target_complete"].fillna(0).astype(int)
     dataset = _add_calendar_features(dataset)
     dataset = _add_lag_features(dataset)
     dataset = _add_remaining_heat_climatology(dataset)
+    dataset = _add_last3_regime_features(dataset)
     dataset = dataset.dropna(subset=["tmax_prev1_c", "remaining_heat_climo_global_c"]).reset_index(
         drop=True
     )
     return dataset
+
+
+def _tmax_time_features(data: pd.DataFrame) -> pd.DataFrame:
+    frame = data[["local_date", "local_minutes", "tmpf"]].dropna(subset=["tmpf"]).copy()
+    if frame.empty:
+        return pd.DataFrame({"local_date": data["local_date"].unique(), "tmax_minute": np.nan})
+    idx = frame.groupby("local_date")["tmpf"].idxmax()
+    return frame.loc[idx, ["local_date", "local_minutes"]].rename(
+        columns={"local_minutes": "tmax_minute"}
+    )
+
+
+def _phase_plateau_features(morning: pd.DataFrame, cutoff_minutes: int) -> pd.DataFrame:
+    frame = morning[["local_date", "local_minutes", "tmpf"]].dropna(subset=["tmpf"]).copy()
+    if frame.empty:
+        return pd.DataFrame({"local_date": morning["local_date"].unique()})
+    frame["tmpc"] = fahrenheit_to_celsius(frame["tmpf"])
+    rows = []
+    for local_date, group in frame.sort_values("local_minutes").groupby("local_date"):
+        last = group.iloc[-1]
+        last_temp = float(last["tmpc"])
+        max_temp = float(group["tmpc"].max())
+        max_rows = group[np.isclose(group["tmpc"], max_temp, atol=0.05)]
+        latest_max_minute = int(max_rows["local_minutes"].max())
+        last_2h = group[group["local_minutes"] >= cutoff_minutes - 120]
+        row = {
+            "local_date": local_date,
+            "last_temp_equals_observed_max": int(abs(last_temp - max_temp) < 0.05),
+            "minutes_since_observed_max": int(last["local_minutes"] - latest_max_minute),
+            "observed_max_is_latest_observation": int(int(last["local_minutes"]) == latest_max_minute),
+            "observed_max_count_so_far": int(len(max_rows)),
+            "duration_within_1c_of_observed_max": int((group["tmpc"] >= max_temp - 1.0).sum() * 30),
+            "duration_within_2c_of_observed_max": int((group["tmpc"] >= max_temp - 2.0).sum() * 30),
+            "temp_range_last_2h": float(last_2h["tmpc"].max() - last_2h["tmpc"].min()),
+            "temp_std_last_2h": float(last_2h["tmpc"].std(ddof=0)) if len(last_2h) > 1 else 0.0,
+            "temp_flat_duration_last_2h": _flat_duration_minutes(last_2h, last_temp),
+        }
+        for minutes in (30, 60, 90, 120):
+            row[f"temp_rise_last_{minutes}m"] = last_temp - _temp_at_or_before(
+                group,
+                cutoff_minutes - minutes,
+            )
+        for hour in (9, 10):
+            key = f"temp_rise_since_{hour:02d}"
+            row[key] = last_temp - _temp_at_or_before(group, hour * 60)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _flat_duration_minutes(last_2h: pd.DataFrame, last_temp_c: float) -> int:
+    if last_2h.empty:
+        return 0
+    duration = 0
+    for _, row in last_2h.sort_values("local_minutes", ascending=False).iterrows():
+        if abs(float(row["tmpc"]) - last_temp_c) > 0.5:
+            break
+        duration += 30
+    return duration
+
+
+def _temp_at_or_before(group: pd.DataFrame, minute: int) -> float:
+    candidates = group[group["local_minutes"] <= minute]
+    if candidates.empty:
+        return float(group.iloc[0]["tmpc"])
+    return float(candidates.iloc[-1]["tmpc"])
 
 
 def _cloud_features(morning: pd.DataFrame) -> pd.DataFrame:
@@ -279,6 +373,52 @@ def _wind_direction_features(morning: pd.DataFrame) -> pd.DataFrame:
     return wind.groupby("local_date", as_index=False).agg(**aggregations)
 
 
+def _weather_suppression_features(morning: pd.DataFrame, cutoff_minutes: int) -> pd.DataFrame:
+    wanted = ["local_date", "local_minutes", "wxcodes", "vsby", "skyl1", "skyl2", "skyl3", "skyl4"]
+    present = [column for column in wanted if column in morning.columns]
+    if "local_date" not in present or "local_minutes" not in present:
+        return pd.DataFrame({"local_date": morning["local_date"].unique()})
+
+    frame = morning[present].copy()
+    frame = frame[frame["local_minutes"] >= cutoff_minutes - 120]
+    if frame.empty:
+        return pd.DataFrame({"local_date": morning["local_date"].unique()})
+
+    codes = frame.get("wxcodes", pd.Series("", index=frame.index)).fillna("").astype(str)
+    frame["rain_flag"] = codes.str.contains("|".join(PRECIP_CODES), regex=True).astype(int)
+    frame["visibility_low_flag"] = (
+        pd.to_numeric(frame.get("vsby", pd.Series(np.nan, index=frame.index)), errors="coerce") < 5.0
+    ).astype(int)
+
+    ceiling_columns = [column for column in ["skyl1", "skyl2", "skyl3", "skyl4"] if column in frame.columns]
+    if ceiling_columns:
+        ceiling = frame[ceiling_columns].apply(pd.to_numeric, errors="coerce").min(axis=1)
+    else:
+        ceiling = pd.Series(np.nan, index=frame.index)
+    frame["ceiling_ft"] = ceiling
+    frame["low_cloud_flag"] = (ceiling <= 3000.0).astype(int)
+    frame["mvfr_or_worse_flag"] = (
+        (frame["low_cloud_flag"] == 1) | (frame["visibility_low_flag"] == 1)
+    ).astype(int)
+
+    grouped = frame.sort_values("local_minutes").groupby("local_date", as_index=False).agg(
+        rain_seen_last_2h=("rain_flag", "max"),
+        rain_seen_at_cutoff=("rain_flag", "last"),
+        low_cloud_seen_last_2h=("low_cloud_flag", "max"),
+        ceiling_min_last_2h=("ceiling_ft", "min"),
+        visibility_min_last_2h=("vsby", "min"),
+        visibility_low_last_2h=("visibility_low_flag", "max"),
+        mvfr_or_worse_last_2h=("mvfr_or_worse_flag", "max"),
+    )
+    grouped["weather_suppression_score"] = (
+        grouped["rain_seen_last_2h"].fillna(0.0)
+        + grouped["low_cloud_seen_last_2h"].fillna(0.0)
+        + grouped["mvfr_or_worse_last_2h"].fillna(0.0) * 0.7
+        + grouped["visibility_low_last_2h"].fillna(0.0) * 0.5
+    )
+    return grouped
+
+
 def _add_calendar_features(dataset: pd.DataFrame) -> pd.DataFrame:
     frame = dataset.copy()
     dates = pd.to_datetime(frame["local_date"])
@@ -294,6 +434,8 @@ def _add_lag_features(dataset: pd.DataFrame) -> pd.DataFrame:
     frame["tmax_prev1_c"] = frame["tmax_c"].shift(1)
     frame["tmin_prev1_c"] = frame["tmin_c"].shift(1)
     frame["tmpc_09_prev1"] = frame["tmpc_last_to_cutoff"].shift(1)
+    for lag in (1, 2, 3):
+        frame[f"tmax_lag_{lag}_c"] = frame["tmax_c"].shift(lag)
     for window in (3, 7, 14):
         shifted_tmax = frame["tmax_c"].shift(1)
         shifted_tmin = frame["tmin_c"].shift(1)
@@ -305,6 +447,36 @@ def _add_lag_features(dataset: pd.DataFrame) -> pd.DataFrame:
 def _add_remaining_heat_climatology(dataset: pd.DataFrame) -> pd.DataFrame:
     frame = dataset.copy().sort_values("local_date").reset_index(drop=True)
     frame["remaining_heat_c"] = frame["tmax_c"] - frame["tmpc_last_to_cutoff"]
+    frame["tmax_climo_global_c"] = frame["tmax_c"].shift(1).expanding(min_periods=1).median()
+    frame["tmax_climo_month_c"] = frame.groupby("month", group_keys=False)["tmax_c"].apply(
+        lambda series: series.shift(1).expanding(min_periods=1).median()
+    )
+    frame["tmax_climo_month_c"] = frame["tmax_climo_month_c"].fillna(
+        frame["tmax_climo_global_c"]
+    )
+    frame["month_tmax_p50_c"] = frame["tmax_climo_month_c"]
+    frame["month_tmax_p90_c"] = frame.groupby("month", group_keys=False)["tmax_c"].apply(
+        lambda series: series.shift(1).expanding(min_periods=1).quantile(0.90)
+    )
+    frame["month_tmax_p90_c"] = frame["month_tmax_p90_c"].fillna(frame["tmax_climo_global_c"])
+    frame["month_median_tmax_minute"] = frame.groupby("month", group_keys=False)[
+        "tmax_minute"
+    ].apply(lambda series: series.shift(1).expanding(min_periods=1).median())
+    frame["month_median_tmax_minute"] = frame["month_median_tmax_minute"].fillna(
+        frame["tmax_minute"].shift(1).expanding(min_periods=1).median()
+    )
+    frame["cutoff_minutes_before_monthly_median_tmax_time"] = (
+        frame["month_median_tmax_minute"] - frame["last_observation_minute"]
+    )
+    frame["cutoff_before_typical_peak"] = (
+        frame["cutoff_minutes_before_monthly_median_tmax_time"] > 30
+    ).astype(int)
+    frame["false_plateau_candidate"] = (
+        (frame.get("temp_flat_duration_last_2h", 0) >= 90)
+        & (frame.get("weather_suppression_score", 0.0) >= 1.0)
+        & (frame["cutoff_before_typical_peak"] == 1)
+        & (frame.get("last_temp_equals_observed_max", 0) == 1)
+    ).astype(int)
     frame["remaining_heat_climo_global_c"] = (
         frame["remaining_heat_c"].shift(1).expanding(min_periods=1).median()
     )
@@ -317,4 +489,60 @@ def _add_remaining_heat_climatology(dataset: pd.DataFrame) -> pd.DataFrame:
     frame["expected_tmax_from_cutoff_c"] = (
         frame["tmpc_last_to_cutoff"] + frame["remaining_heat_climo_month_c"]
     )
+    frame["month_remaining_heat_p50_by_cutoff"] = frame["remaining_heat_climo_month_c"]
+    frame["month_remaining_heat_p90_by_cutoff"] = frame.groupby(
+        ["month"],
+        group_keys=False,
+    )["remaining_heat_c"].apply(lambda series: series.shift(1).expanding(min_periods=1).quantile(0.90))
+    frame["month_remaining_heat_p90_by_cutoff"] = frame[
+        "month_remaining_heat_p90_by_cutoff"
+    ].fillna(frame["remaining_heat_climo_global_c"])
     return frame.drop(columns=["remaining_heat_c"])
+
+
+def _add_last3_regime_features(dataset: pd.DataFrame) -> pd.DataFrame:
+    frame = dataset.copy().sort_values("local_date").reset_index(drop=True)
+    for lag in (1, 2, 3):
+        frame[f"tmax_lag_{lag}_anomaly_c"] = frame[f"tmax_lag_{lag}_c"] - frame[
+            "tmax_climo_month_c"
+        ]
+    anomaly_columns = [f"tmax_lag_{lag}_anomaly_c" for lag in (1, 2, 3)]
+    frame["last3_tmax_anomaly_mean_c"] = frame[anomaly_columns].mean(axis=1)
+    frame["last3_tmax_anomaly_trend_c"] = (
+        frame["tmax_lag_1_anomaly_c"] - frame["tmax_lag_3_anomaly_c"]
+    )
+
+    frame["last3_temp_to_cutoff_mean_c"] = (
+        frame["tmpc_last_to_cutoff"].shift(1).rolling(3, min_periods=1).mean()
+    )
+    frame["last3_max_to_cutoff_mean_c"] = (
+        frame["tmpc_max_to_cutoff"].shift(1).rolling(3, min_periods=1).mean()
+    )
+    frame["last3_warming_rate_mean_c"] = (
+        frame["temp_rise_last_120m"].shift(1).rolling(3, min_periods=1).mean()
+    )
+    frame["today_vs_last3_temp_to_cutoff_diff_c"] = (
+        frame["tmpc_last_to_cutoff"] - frame["last3_temp_to_cutoff_mean_c"]
+    )
+    frame["today_vs_last3_max_to_cutoff_diff_c"] = (
+        frame["tmpc_max_to_cutoff"] - frame["last3_max_to_cutoff_mean_c"]
+    )
+    frame["today_vs_last3_warming_rate_diff_c"] = (
+        frame["temp_rise_last_120m"] - frame["last3_warming_rate_mean_c"]
+    )
+    frame["regime_break_score"] = (
+        frame["today_vs_last3_temp_to_cutoff_diff_c"].abs().fillna(0.0)
+        + frame["today_vs_last3_max_to_cutoff_diff_c"].abs().fillna(0.0)
+        + frame["today_vs_last3_warming_rate_diff_c"].abs().fillna(0.0) * 0.5
+    )
+    frame["regime_break_cooler_than_recent"] = (
+        frame["today_vs_last3_temp_to_cutoff_diff_c"] <= -2.0
+    ).astype(int)
+    frame["regime_break_warmer_than_recent"] = (
+        frame["today_vs_last3_temp_to_cutoff_diff_c"] >= 2.0
+    ).astype(int)
+    frame["regime_break_similar_to_recent"] = (
+        (frame["regime_break_cooler_than_recent"] == 0)
+        & (frame["regime_break_warmer_than_recent"] == 0)
+    ).astype(int)
+    return frame

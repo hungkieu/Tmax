@@ -9,3 +9,5 @@ artifacts/*
 
 *.joblib
 *.parquet
+*.duckdb
+*.duckdb.wal

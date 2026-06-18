@@ -14,6 +14,9 @@ class ProjectConfig:
     complete_day_min_local: str = "23:00"
     target: str = "tmax"
     input_csv: Path = Path("asos.csv")
+    input_db: Path = Path("artifacts/observations.duckdb")
+    prefer_duckdb: bool = True
+    raw_csv_files: tuple[Path, ...] = (Path("asos.csv"),)
     heat_risk_cutoffs: tuple[str, ...] = (
         "06:00",
         "07:00",
@@ -48,6 +51,16 @@ def _hhmm_to_minutes(value: str) -> int:
     return int(hour_text) * 60 + int(minute_text)
 
 
+def _minutes_to_hhmm(minutes: int) -> str:
+    hour = minutes // 60
+    minute = minutes % 60
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _normalize_hhmm(value: str) -> str:
+    return _minutes_to_hhmm(_hhmm_to_minutes(value))
+
+
 def load_config(path: str | Path = "configs/default.yaml") -> ProjectConfig:
     config_path = Path(path)
     with config_path.open("r", encoding="utf-8") as file:
@@ -55,13 +68,20 @@ def load_config(path: str | Path = "configs/default.yaml") -> ProjectConfig:
 
     path_fields = {
         "input_csv",
+        "input_db",
         "heat_risk_dataset_parquet",
         "heat_risk_model_path",
         "heat_risk_metrics_path",
     }
     values = {key: Path(value) if key in path_fields else value for key, value in raw.items()}
+    if "raw_csv_files" in values:
+        values["raw_csv_files"] = tuple(Path(value) for value in values["raw_csv_files"])
+    if "cutoff_local" in values:
+        values["cutoff_local"] = _normalize_hhmm(values["cutoff_local"])
+    if "complete_day_min_local" in values:
+        values["complete_day_min_local"] = _normalize_hhmm(values["complete_day_min_local"])
     if "heat_risk_cutoffs" in values:
-        values["heat_risk_cutoffs"] = tuple(values["heat_risk_cutoffs"])
+        values["heat_risk_cutoffs"] = tuple(_normalize_hhmm(value) for value in values["heat_risk_cutoffs"])
     if "heat_risk_thresholds_c" in values:
         values["heat_risk_thresholds_c"] = tuple(float(value) for value in values["heat_risk_thresholds_c"])
     return ProjectConfig(**values)

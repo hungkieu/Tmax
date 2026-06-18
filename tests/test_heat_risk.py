@@ -5,9 +5,15 @@ import pandas as pd
 
 from rksi_tmax.config import ProjectConfig
 from rksi_tmax.heat_risk import (
+    _add_future_curve_targets,
+    _false_plateau_rule,
+    format_heat_risk_explanation,
     _make_single_cutoff_dataset,
+    _prediction_interval,
+    _regime_break_output,
     _threshold_probabilities,
     _threshold_probability,
+    _underprediction_probabilities,
     _update_recommendation,
 )
 
@@ -100,8 +106,63 @@ def test_threshold_probabilities_are_monotonic() -> None:
     assert probabilities["30.0"][0] == 0.2
 
 
+def test_underprediction_probabilities_are_monotonic() -> None:
+    features = pd.DataFrame({"x": [1.0]})
+    classifiers = {
+        "1.5": FixedProbabilityClassifier(0.6),
+        "2.0": FixedProbabilityClassifier(0.8),
+    }
+
+    probabilities = _underprediction_probabilities(classifiers, features)
+
+    assert probabilities["1.5"][0] == 0.6
+    assert probabilities["2.0"][0] == 0.6
+
+
+def test_false_plateau_rule_detects_suppressed_heating() -> None:
+    row = pd.Series(
+        {
+            "cutoff_minutes": 600,
+            "temp_flat_duration_last_2h": 120,
+            "temp_range_last_2h": 0.5,
+            "weather_suppression_score": 1.7,
+            "last_temp_equals_observed_max": 1,
+            "cutoff_before_typical_peak": 1,
+        }
+    )
+
+    result = _false_plateau_rule(row)
+
+    assert result["suppressed_late_warming_warning"]
+    assert result["warning_type"] == "weather_suppressed_false_plateau"
+
+
+def test_format_heat_risk_explanation_includes_key_fields() -> None:
+    text = format_heat_risk_explanation(
+        {
+            "station": "RJTT",
+            "local_date": "2026-06-19",
+            "cutoff_local": "10:00",
+            "observed_max_to_cutoff_c": 22.0,
+            "last_temp_to_cutoff_c": 22.0,
+            "predicted_remaining_heat_c": 2.0,
+            "predicted_tmax_c": 24.0,
+            "prediction_interval_80_low_c": 22.5,
+            "prediction_interval_80_high_c": 25.5,
+            "thermal_phase": "uncertain_transition",
+            "late_warming_risk": "high",
+            "late_warming_warning": "elevated_late_warming_risk",
+        }
+    )
+
+    assert "RJTT" in text
+    assert "24.0C" in text
+    assert "co rui ro tang nhiet muon" in text
+
+
 def test_update_recommendation_uses_policy_and_interval_width() -> None:
     interval = {"prediction_interval_80_low_c": 25.0, "prediction_interval_80_high_c": 27.0}
+    row = pd.Series({"tmpc_last_to_cutoff": 26.0, "tmpc_max_to_cutoff": 26.0})
     policy = {
         "10:00": {
             "next_cutoff_local": "11:00",
@@ -109,7 +170,7 @@ def test_update_recommendation_uses_policy_and_interval_width() -> None:
         }
     }
 
-    recommendation = _update_recommendation("10:00", interval, policy)
+    recommendation = _update_recommendation("10:00", interval, policy, row=row)
 
     assert recommendation["next_update_local"] == "11:00"
     assert recommendation["recommend_update_next_cutoff"]
@@ -128,3 +189,69 @@ def test_update_recommendation_uses_nearest_policy_for_arbitrary_cutoff() -> Non
 
     assert recommendation["next_update_local"] == "11:00"
     assert recommendation["recommend_update_next_cutoff"]
+
+
+def test_update_recommendation_does_not_recommend_same_or_past_cutoff() -> None:
+    interval = {"prediction_interval_80_low_c": 25.0, "prediction_interval_80_high_c": 27.0}
+    policy = {
+        "12:30": {
+            "next_cutoff_local": "13:00",
+            "median_abs_error_improvement_c": 0.2,
+        }
+    }
+
+    recommendation = _update_recommendation("13:00", interval, policy)
+
+    assert recommendation["next_update_local"] is None
+    assert not recommendation["recommend_update_next_cutoff"]
+
+
+def test_prediction_interval_reports_practical_low() -> None:
+    calibration = {
+        "method": "conformal_by_cutoff",
+        "overall": {"residual_p10_c": -2.0, "residual_p50_c": 0.0, "residual_p90_c": 1.0},
+        "by_cutoff": {
+            "12:00": {"residual_p10_c": -1.5, "residual_p50_c": 0.1, "residual_p90_c": 0.8}
+        },
+    }
+
+    interval = _prediction_interval(28.5, calibration, "12:00", observed_max_c=28.0)
+
+    assert interval["prediction_interval_80_low_raw_c"] == 27.0
+    assert interval["prediction_interval_80_low_practical_c"] == 28.0
+    assert interval["prediction_interval_80_low_c"] == 28.0
+
+
+def test_future_curve_targets_use_local_minutes_and_keep_missing_horizons() -> None:
+    frame = pd.DataFrame({"local_date": ["2024-06-02"], "cutoff_minutes": [600]})
+    observations = pd.DataFrame(
+        {
+            "valid_local": pd.to_datetime(
+                [
+                    "2024-06-02 10:30+09:00",
+                    "2024-06-02 12:00+09:00",
+                ]
+            ),
+            "tmpf": [68.0, 77.0],
+        }
+    )
+
+    result = _add_future_curve_targets(frame, observations, cutoff_minutes=600)
+
+    assert result.loc[0, "future_tmpc_plus_30m"] == 20.0
+    assert pd.isna(result.loc[0, "future_tmpc_plus_60m"])
+    assert result.loc[0, "future_tmpc_plus_120m"] == 25.0
+
+
+def test_regime_break_output_classifies_cooler_warmer_similar() -> None:
+    cooler = _regime_break_output(
+        pd.Series({"regime_break_cooler_than_recent": 1, "regime_break_score": 4.0})
+    )
+    warmer = _regime_break_output(
+        pd.Series({"regime_break_warmer_than_recent": 1, "regime_break_score": 3.0})
+    )
+    similar = _regime_break_output(pd.Series({"regime_break_score": 0.5}))
+
+    assert cooler["regime_break_type"] == "cooler_than_recent"
+    assert warmer["regime_break_type"] == "warmer_than_recent"
+    assert similar["regime_break_type"] == "similar_to_recent"

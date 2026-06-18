@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import math
 import re
+from urllib.parse import urlencode
+from urllib.request import urlopen
 from calendar import monthrange
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -62,6 +64,7 @@ def import_metar_file(
     metar_path: str | Path = "metar.txt",
     csv_path: str | Path = "asos.csv",
     reference_date: str | date | None = None,
+    db_path: str | Path | None = None,
 ) -> dict:
     metar_file = Path(metar_path)
     target_csv = Path(csv_path)
@@ -85,12 +88,46 @@ def import_metar_file(
             writer = csv.DictWriter(file, fieldnames=ASOS_COLUMNS, lineterminator="\n")
             writer.writerows(new_rows)
 
+    db_result = None
+    if db_path is not None:
+        from rksi_tmax.storage import upsert_observation_rows
+
+        db_result = upsert_observation_rows(new_rows, db_path)
+
     return {
         "metar_file": str(metar_file),
         "csv_path": str(target_csv),
+        "db_path": str(db_path) if db_path is not None else None,
         "read": len(rows),
         "inserted": len(new_rows),
         "skipped_existing": len(rows) - len(new_rows),
+        "db_inserted": db_result["inserted"] if db_result else None,
+    }
+
+
+def fetch_metar_text(
+    stations: list[str],
+    hours: int = 48,
+    output_path: str | Path = "metar.txt",
+) -> dict:
+    if not stations:
+        raise ValueError("At least one station is required.")
+    normalized = [station.strip().upper() for station in stations if station.strip()]
+    query = urlencode({"ids": ",".join(normalized), "hours": int(hours), "sep": "true"})
+    url = f"https://aviationweather.gov/api/data/metar?{query}"
+
+    with urlopen(url, timeout=30) as response:
+        content = response.read().decode("utf-8")
+
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    output = Path(output_path)
+    output.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    return {
+        "url": url,
+        "output_path": str(output),
+        "stations": normalized,
+        "hours": int(hours),
+        "lines": len(lines),
     }
 
 

@@ -5,16 +5,18 @@ complete_day_min_local: "23:00"
 target: tmax
 
 input_csv: asos.csv
+input_db: artifacts/observations.duckdb
+prefer_duckdb: true
+raw_csv_files:
+  - asos.csv
+  - RJTT.csv
+  - WSSS.csv
 
 heat_risk_cutoffs:
   - "09:00"
-  - "09:30"
   - "10:00"
-  - "10:30"
   - "11:00"
-  - "11:30"
   - "12:00"
-  - "12:30"
   - "13:00"
 heat_risk_thresholds_c:
   - 28.0

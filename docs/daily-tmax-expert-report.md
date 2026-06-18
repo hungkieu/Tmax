@@ -1,254 +1,287 @@
-# RKSI Tmax Heat-Risk Expert Evaluation Report
+# RKSI Thermal Phase / Tmax Heat-Risk Expert Report
 
 ## Executive Summary
 
-The active model answers this operational question:
+The current operational question is broader than direct Tmax regression:
 
 ```text
-Given observations up to any local cutoff, how much higher can final Tmax still
-go, what is the probability of crossing configured hot thresholds, and should
-the forecast be updated at the next cutoff?
+Given observations up to a local cutoff, what thermal phase is today in, how
+much additional warming remains, what future temperature curve is likely, and
+what is the final Tmax risk distribution?
 ```
 
-The project exposes a single Tmax-facing workflow:
+Operational forecast remains conservative:
 
-```powershell
-uv run rksi-predict-heat-risk --date YYYY-MM-DD --cutoff-local HH:MM
+```text
+predicted_tmax_c = M0 heat-risk forecast
 ```
+
+The new phase-feature model and future-curve model are reported for validation
+and expert review, but they do not override `predicted_tmax_c` in v1.
 
 ## Model Setup
 
 Station: `RKSI`
 
-Training data:
+Training and validation:
 
 ```text
 Train period: 2016-01-02 to 2024-05-15
 Test period: 2024-05-16 to 2026-06-17
-Train rows: 27441
-Test rows: 6867
-Feature count: 98
+Train rows: 15245
+Test rows: 3815
+Cutoffs: 09:00, 10:00, 11:00, 12:00, 13:00 local
 ```
 
-Cutoffs used for training and validation:
+Model layers:
 
-```text
-09:00, 09:30, 10:00, 10:30, 11:00,
-11:30, 12:00, 12:30, 13:00 local
-```
-
-Target:
-
-```text
-remaining_heat_target_c = final_tmax_c - observed_max_to_cutoff_c
-```
-
-Final Tmax prediction:
-
-```text
-predicted_tmax_c = observed_max_to_cutoff_c + predicted_remaining_heat_c
-```
-
-Algorithms:
-
-- `HistGradientBoostingRegressor` for remaining heat.
-- `HistGradientBoostingClassifier` for each hot threshold.
-
-Recent feature additions:
-
-- wind direction circular encoding and last-observation wind regime flags;
-- cloud clearing/increasing signal from first to last pre-cutoff observation;
-- fog cleared/developed signal from first to last pre-cutoff observation.
+- `M0 heat-risk`: current operational two-stage remaining-heat model.
+- `M1 phase features`: expanded remaining-heat model using phase/plateau,
+  climatology, and last-3-days regime features.
+- `Thermal phase classifier`: predicts `pre_peak_ramp`, `peak_plateau`,
+  `post_peak_decline`, or `uncertain_transition`.
+- `Late-warming classifiers`: estimate remaining heat `>= 0.5/1/2/3 C`.
+- `Future-curve models`: predict `T+30m` through `T+180m`.
 
 ## Overall Accuracy
 
-| Metric | Value |
+| Model / Metric | Value |
 |---|---:|
-| Remaining heat MAE | 0.857 C |
-| Final Tmax MAE | 0.857 C |
-| Final Tmax RMSE | 1.135 C |
-| Final Tmax bias | +0.044 C |
-| Baseline MAE using only observed max so far | 1.974 C |
+| M0 operational Tmax MAE | 0.853 C |
+| M0 Tmax RMSE | 1.136 C |
+| M0 bias | +0.053 C |
+| M1 phase-feature Tmax MAE | 0.825 C |
+| Curve-derived Tmax MAE | 0.958 C |
+| Observed-max baseline MAE | 1.990 C |
 
 Interpretation:
 
-- The model is materially better than assuming the current observed maximum
-  remains the final Tmax.
-- Overall bias is small.
-- The target is operationally interpretable: expected additional warming after
-  the cutoff.
+- `M0` remains strong and is the operational forecast.
+- `M1` improves RKSI backtest MAE by about `0.03 C`; this is promising but not
+  yet used to replace `M0`.
+- Curve-derived Tmax is worse than `M0`, so curve output should be treated as
+  explanatory/diagnostic, not the final Tmax forecast.
 
 ## Accuracy By Cutoff
 
-| Cutoff | N | Tmax MAE (C) | Observed-max baseline MAE (C) | Bias (C) |
+| Cutoff | N | M0 Tmax MAE (C) | Observed-max baseline MAE (C) | Bias (C) |
 |---|---:|---:|---:|---:|
-| 09:00 | 763 | 1.181 | 3.611 | +0.016 |
-| 09:30 | 763 | 1.082 | 3.212 | +0.043 |
-| 10:00 | 763 | 1.006 | 2.746 | +0.016 |
-| 10:30 | 763 | 0.926 | 2.280 | +0.064 |
-| 11:00 | 763 | 0.855 | 1.856 | +0.036 |
-| 11:30 | 763 | 0.787 | 1.471 | +0.045 |
-| 12:00 | 763 | 0.700 | 1.119 | +0.063 |
-| 12:30 | 763 | 0.622 | 0.855 | +0.040 |
-| 13:00 | 763 | 0.555 | 0.619 | +0.071 |
+| 09:00 | 763 | 1.154 | 3.611 | +0.054 |
+| 10:00 | 763 | 1.006 | 2.746 | +0.014 |
+| 11:00 | 763 | 0.868 | 1.856 | +0.054 |
+| 12:00 | 763 | 0.698 | 1.119 | +0.080 |
+| 13:00 | 763 | 0.540 | 0.619 | +0.062 |
 
 Interpretation:
 
-- Accuracy improves as the cutoff gets later.
-- ML adds clear value from `09:00` through `12:30`.
-- By `13:00`, the observed maximum baseline is already strong, but ML still
-  improves MAE slightly.
+- The model continues to add most value before noon.
+- By 13:00, observed maximum is already a strong baseline, but ML still helps
+  slightly.
+- Bias remains small and positive across cutoffs.
 
-## Feature Experiment: Wind Regime And Cloud/Fog Clearing
+## Thermal Phase Classifier
 
-The model was retrained after adding wind direction regime and cloud/fog
-clearing features.
+Current RKSI validation:
 
-Comparison on the shared `10:00` to `13:00` cutoff set:
+```text
+Accuracy: 75.3%
+```
 
-| Cutoff | MAE before (C) | MAE after (C) | Delta (C) |
+Confusion matrix order:
+
+```text
+pre_peak_ramp, peak_plateau, post_peak_decline, uncertain_transition
+```
+
+```text
+[[1546,  55,  67,   0],
+ [ 185, 201,  72,  83],
+ [ 124, 125, 614, 113],
+ [   0,  28,  90, 512]]
+```
+
+Interpretation:
+
+- `pre_peak_ramp` is detected well.
+- `peak_plateau` remains the hardest class, often confused with ramp or
+  post-peak states.
+- This is operationally acceptable for v1 because phase is used for explanation
+  and risk context, not to override the main forecast.
+
+## Late-Warming Risk
+
+Probability model quality:
+
+| Event | Event rate | Brier | Brier Skill Score | ROC AUC |
+|---|---:|---:|---:|---:|
+| Remaining heat >= 0.5 C | 74.4% | 0.109 | 0.426 | 0.895 |
+| Remaining heat >= 1.0 C | 64.9% | 0.121 | 0.470 | 0.899 |
+| Remaining heat >= 2.0 C | 42.7% | 0.120 | 0.512 | 0.911 |
+| Remaining heat >= 3.0 C | 27.1% | 0.104 | 0.472 | 0.913 |
+
+Operational detection at probability threshold `30%`:
+
+| Event | Recall | Precision | False alarm rate |
 |---|---:|---:|---:|
-| 10:00 | 1.025 | 1.006 | -0.019 |
-| 10:30 | 0.933 | 0.926 | -0.007 |
-| 11:00 | 0.866 | 0.855 | -0.011 |
-| 11:30 | 0.790 | 0.787 | -0.003 |
-| 12:00 | 0.701 | 0.700 | -0.002 |
-| 12:30 | 0.616 | 0.622 | +0.006 |
-| 13:00 | 0.544 | 0.555 | +0.011 |
-| Average | 0.782 | 0.779 | -0.003 |
+| Remaining heat >= 2 C | 90.2% | 71.3% | 28.7% |
+| Remaining heat >= 3 C | 79.6% | 66.8% | 33.2% |
 
 Interpretation:
 
-- The new features improve earlier cutoffs slightly.
-- They do not materially improve later cutoffs, and `12:30`/`13:00` became a
-  little worse.
-- Overall impact is positive but very small. These features are worth keeping
-  as meteorologically meaningful context, but they are not a major accuracy
-  breakthrough.
+- The late-warming layer is useful: it captures most `>=2 C` and `>=3 C`
+  events.
+- False alarms are not trivial, so the risk label should be read as a warning,
+  not as a deterministic correction.
 
-## Hot-Threshold Probability Quality
+Risk label policy:
 
-| Threshold | Event rate | Brier score | ROC AUC |
-|---|---:|---:|---:|
-| Tmax >= 28 C | 20.7% | 0.025 | 0.995 |
-| Tmax >= 29 C | 18.0% | 0.029 | 0.994 |
-| Tmax >= 30 C | 14.8% | 0.027 | 0.994 |
-| Tmax >= 31 C | 10.4% | 0.025 | 0.992 |
+```text
+low:      P(remaining_heat >= 2 C) < 10%
+moderate: 10% to <30%
+elevated: 30% to <50%
+high:     >=50%
+```
 
-Interpretation:
+## Future Curve Model
 
-- Threshold ranking skill is strong on the test period.
-- Half-degree thresholds were removed because METAR temperature precision is
-  usually integer Celsius and adjacent 0.5 C probabilities added little value.
-- Threshold probabilities are forced monotonic, so a higher threshold cannot
-  have higher probability than a lower threshold.
-- If the threshold has already been crossed by the observed maximum before the
-  cutoff, prediction output forces that probability to `1.0`.
+Horizon MAE:
 
-## Forecast Update Value
+| Horizon | MAE (C) |
+|---|---:|
+| T+30m | 0.502 |
+| T+60m | 0.631 |
+| T+90m | 0.745 |
+| T+120m | 0.833 |
+| T+150m | 0.929 |
+| T+180m | 0.986 |
 
-| Current cutoff | Next cutoff | Median abs-error improvement (C) | Update helped rate |
-|---|---|---:|---:|
-| 09:00 | 09:30 | 0.112 | 57.8% |
-| 09:30 | 10:00 | 0.056 | 53.6% |
-| 10:00 | 10:30 | 0.059 | 55.0% |
-| 10:30 | 11:00 | 0.046 | 52.9% |
-| 11:00 | 11:30 | 0.082 | 56.5% |
-| 11:30 | 12:00 | 0.115 | 60.4% |
-| 12:00 | 12:30 | 0.113 | 59.0% |
-| 12:30 | 13:00 | 0.079 | 58.8% |
+Curve-derived Tmax:
+
+```text
+MAE: 0.958 C
+```
 
 Interpretation:
 
-- Half-hour updates from `09:00` to `13:00` are usually modest but positive.
-- The prediction command also considers interval width. A wide interval can
-  trigger `recommend_update_next_cutoff = true` even when historical median
-  improvement is modest.
+- The curve is useful for near-term shape and expert interpretation.
+- Error grows with horizon, as expected.
+- The curve-derived Tmax is worse than `M0`, so it should not replace
+  `predicted_tmax_c` yet.
 
-## Live Example: 2026-06-18 At 12:30
+## Hot-Threshold Probability
+
+| Threshold | Event rate | Brier | Brier Skill Score | ROC AUC |
+|---|---:|---:|---:|---:|
+| Tmax >= 28 C | 20.7% | 0.024 | 0.857 | 0.995 |
+| Tmax >= 29 C | 18.0% | 0.027 | 0.821 | 0.994 |
+| Tmax >= 30 C | 14.8% | 0.025 | 0.808 | 0.995 |
+| Tmax >= 31 C | 10.4% | 0.024 | 0.751 | 0.993 |
+
+Interpretation:
+
+- Hot-threshold probabilities remain strong.
+- Output includes raw and monotonic operational probabilities.
+- If the observed maximum has already crossed a threshold, operational
+  probability for that threshold is forced to `1.0`.
+
+## Live RKSI Example: 2026-06-18 12:30
 
 Command:
 
 ```powershell
-uv run rksi-predict-heat-risk --date 2026-06-18 --cutoff-local 12:30
+uv run rksi-predict-heat-risk --config configs/default.yaml --date 2026-06-18 --cutoff-local 12:30
 ```
 
 Key output:
 
-| Field | Value | Meaning |
-|---|---:|---|
-| `observed_max_to_cutoff_c` | 28.0 C | Highest observed temperature by 12:30 |
-| `last_temp_to_cutoff_c` | 28.0 C | Latest temperature at/before 12:30 |
-| `predicted_remaining_heat_c` | 0.51 C | Expected additional warming |
-| `predicted_tmax_c` | 28.51 C | Final Tmax forecast |
-| `prediction_interval_80_low_c` | 27.18 C | Raw lower interval bound |
-| `prediction_interval_80_high_c` | 29.88 C | Upper interval bound |
-| `next_update_local` | 13:00 | Suggested next forecast time |
-| `recommend_update_next_cutoff` | true | Updating at 13:00 is worthwhile |
+| Field | Value |
+|---|---:|
+| Last observation | 2026-06-18 12:30 |
+| Data fresh enough | true |
+| Observed max to cutoff | 28.0 C |
+| Last temp to cutoff | 28.0 C |
+| Predicted remaining heat | +0.25 C |
+| M0 predicted Tmax | 28.25 C |
+| Practical 80% interval | 28.0 to 29.58 C |
+| Thermal phase | post_peak_decline |
+| Probability post-peak decline | 74.2% |
+| Probability Tmax already reached | 78.1% |
+| Late-warming risk | low |
+| P(remaining heat >= 2 C) | 1.7% |
+| P(remaining heat >= 3 C) | 0.25% |
+| P(Tmax >= 29 C) | 12.5% |
+| P(Tmax >= 30 C) | 0.1% |
+
+Future curve:
+
+| Local time | Predicted temp |
+|---|---:|
+| 13:00 | 27.91 C |
+| 13:30 | 27.88 C |
+| 14:00 | 28.08 C |
+| 14:30 | 27.56 C |
+| 15:00 | 27.60 C |
+| 15:30 | 26.63 C |
 
 Operational reading:
 
 ```text
-Observed max so far: 28.0 C
-Expected final Tmax: about 28.5 C
-Practical 80% interval: 28.0 C to 29.9 C
+The model sees 28 C as likely near or past the day's peak.
+Expected additional warming is small.
+The risk of a late +2 C or +3 C jump is low.
+The future curve does not support a strong late-warming scenario.
 ```
 
-The raw lower interval is below the already observed maximum. Operationally,
-clip the lower bound to the observed maximum because final Tmax cannot be lower
-than a temperature already observed earlier in the day.
+## Multi-Station Snapshot
 
-Hot-threshold probabilities:
+Latest validation MAE:
 
-| Threshold | Probability |
-|---|---:|
-| Tmax >= 28 C | 100.0% |
-| Tmax >= 29 C | 11.4% |
-| Tmax >= 30 C | 0.36% |
-| Tmax >= 31 C | 0.36% |
+| Station | M0 MAE | M1 MAE | Curve Tmax MAE |
+|---|---:|---:|---:|
+| RKSI | 0.853 C | 0.825 C | 0.958 C |
+| RKPK | 0.957 C | 0.961 C | 1.608 C |
+| RJTT | 0.785 C | 0.762 C | 0.864 C |
+| WSSS | 0.609 C | 0.609 C | 0.903 C |
+
+Interpretation:
+
+- `M1` improves RKSI and RJTT, is neutral on WSSS, and slightly worse on RKPK.
+- Curve-derived Tmax is not yet good enough to become the operational forecast.
+- Future-curve output is still valuable for expert review of phase and late
+  warming.
 
 ## Diagnostics For Expert Review
 
-Primary diagnostics:
+Primary files:
 
 ```text
 artifacts/heat_risk_diagnostics.png
+artifacts/heat_risk_thermal_curve_diagnostics.png
 artifacts/heat_risk_validation_report.json
 artifacts/heat_risk_top_errors.csv
+artifacts/heat_risk_top_error_days.csv
 ```
 
-The largest current heat-risk errors include early-day cases where post-cutoff
-warming behaved very differently from the morning signal:
+Expert review should focus on:
 
-- sharp late warming after a cool morning;
-- over-predicted warming on days where Tmax was already reached early;
-- precipitation, fog, cloud, or wind-regime cases.
+- cases where phase classifier predicts post-peak but actual later warming is
+  large;
+- late-warming false alarms;
+- plateau vs post-peak confusion;
+- whether M1 should replace M0 for RKSI/RJTT after more validation;
+- whether curve model should be used only for near-term curve shape, not Tmax.
 
-Largest current test-set error:
+## Recommendation
 
-| Date | Cutoff | Actual Tmax (C) | Predicted Tmax (C) | Error (C) |
-|---|---|---:|---:|---:|
-| 2025-03-26 | 09:00 | 22.0 | 15.19 | -6.81 |
-
-This should be reviewed meteorologically before changing the model, because
-extreme early-cutoff errors may represent regime shifts that are not visible in
-METAR-only features.
-
-## Final Recommendation
-
-Use this as the single operational interface:
+Use this operational command:
 
 ```powershell
-uv run rksi-predict-heat-risk --date YYYY-MM-DD --cutoff-local HH:MM
+uv run rksi-predict-heat-risk --config configs/default.yaml --date YYYY-MM-DD --cutoff-local HH:MM
 ```
 
-For new observations:
+For now:
 
-```powershell
-uv run rksi-import-metar --metar-file metar.txt --reference-date YYYY-MM-DD
-uv run rksi-predict-heat-risk --date YYYY-MM-DD --cutoff-local HH:MM
-```
-
-Retraining is not required for every live prediction. Rebuild and retrain when
-new completed historical days have accumulated or when changing feature/model
-settings.
+- Keep `predicted_tmax_c` from M0 as the official forecast.
+- Use `thermal_phase`, `future_curve`, and `late_warming_risk` as expert
+  context.
+- Do not switch to curve-derived Tmax until backtest improves over M0.
