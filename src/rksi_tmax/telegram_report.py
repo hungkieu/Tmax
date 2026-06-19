@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -142,8 +143,8 @@ def build_telegram_report(
 def format_telegram_report(entries: list[dict], generated_at_utc: datetime) -> str:
     generated = generated_at_utc.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
-        "Heat-risk report",
-        f"Generated: {generated}",
+        "Báo cáo heat-risk",
+        f"Tạo lúc: {generated}",
         "",
     ]
     for entry in entries:
@@ -160,31 +161,46 @@ def _format_prediction_entry(prediction: dict) -> list[str]:
     interval_high = prediction.get("prediction_interval_80_high_c")
     weather = prediction.get("weather_context", {})
     weather_summary = weather.get("summary") if isinstance(weather, dict) else None
-    weather_lines = weather_summary[:2] if isinstance(weather_summary, list) else []
+    weather_lines = weather_summary[:3] if isinstance(weather_summary, list) else []
+    threshold_text = _format_threshold_probabilities(prediction)
+    remaining_heat_text = _format_remaining_heat_probabilities(prediction)
+    curve_text = _format_future_curve(prediction)
+    freshness = _format_freshness(prediction)
+    warning_reasons = prediction.get("warning_reasons")
+    warning_text = "; ".join(warning_reasons[:2]) if isinstance(warning_reasons, list) else None
     output = [
         f"{prediction['station']} | {prediction['local_date']} | cutoff {prediction['cutoff_local']}",
         (
-            f"Tmax: {_format_c(prediction.get('predicted_tmax_c'))} "
-            f"(80% {_format_c(interval_low)}-{_format_c(interval_high)})"
+            f"Dự báo Tmax: {_format_c(prediction.get('predicted_tmax_c'))}; "
+            f"P50 {_format_c(prediction.get('prediction_p50_c'))}; "
+            f"khoảng 80% {_format_c(interval_low)}-{_format_c(interval_high)}"
         ),
         (
-            f"Observed max: {_format_c(prediction.get('observed_max_to_cutoff_c'))}; "
-            f"latest: {_format_c(prediction.get('last_temp_to_cutoff_c'))} "
-            f"at {prediction.get('last_observation_local', 'unknown')}"
+            f"Đã quan sát: max {_format_c(prediction.get('observed_max_to_cutoff_c'))}; "
+            f"mới nhất {_format_c(prediction.get('last_temp_to_cutoff_c'))} "
+            f"lúc {prediction.get('last_observation_local', 'không rõ')}{freshness}"
         ),
         (
-            "Risk: "
-            f">=29C {_format_percent(prediction.get('prob_tmax_ge_29c'))}, "
-            f">=30C {_format_percent(prediction.get('prob_tmax_ge_30c'))}, "
-            f"late warming {prediction.get('late_warming_warning', 'unknown')}"
+            f"Xác suất ngưỡng: {threshold_text}"
+        ),
+        remaining_heat_text,
+        (
+            f"Pha nhiệt: {_translate_phase(prediction.get('thermal_phase'))}; "
+            f"rủi ro tăng muộn: {_translate_warning(prediction.get('late_warming_warning'))}"
         ),
     ]
+    if curve_text:
+        output.append(f"Đường nhiệt tới: {curve_text}")
+    if warning_text:
+        output.append(f"Lý do cảnh báo: {_translate_warning_reasons(warning_text)}")
+    if prediction.get("recommended_action"):
+        output.append(f"Khuyến nghị: {_translate_recommended_action(prediction['recommended_action'])}")
     output.extend(f"Weather: {line}" for line in weather_lines)
     if prediction.get("next_update_local"):
         output.append(
-            "Next update: "
+            "Cập nhật tiếp: "
             f"{prediction['next_update_local']} "
-            f"({'recommended' if prediction.get('recommend_update_next_cutoff') else 'optional'})"
+            f"({'nên cập nhật' if prediction.get('recommend_update_next_cutoff') else 'tuỳ chọn'})"
         )
     return output
 
@@ -192,8 +208,105 @@ def _format_prediction_entry(prediction: dict) -> list[str]:
 def _format_error_entry(entry: dict) -> list[str]:
     return [
         f"{entry.get('station', 'unknown')} | {entry.get('local_date')} | cutoff {entry.get('cutoff_local')}",
-        f"ERROR: {entry.get('error', 'unknown error')}",
+        f"LỖI: {entry.get('error', 'unknown error')}",
     ]
+
+
+def _format_threshold_probabilities(prediction: dict) -> str:
+    probabilities = prediction.get("monotonic_threshold_probabilities")
+    if isinstance(probabilities, dict) and probabilities:
+        items = sorted(
+            ((_threshold_from_slug(slug), value) for slug, value in probabilities.items()),
+            key=lambda item: item[0],
+        )
+    else:
+        items = sorted(
+            (
+                (_threshold_from_slug(match.group(1)), value)
+                for key, value in prediction.items()
+                if (match := re.fullmatch(r"prob_tmax_ge_([0-9p]+c)", key))
+            ),
+            key=lambda item: item[0],
+        )
+    if not items:
+        return "không có"
+    return ", ".join(f">={threshold:g}C {_format_percent(value)}" for threshold, value in items)
+
+
+def _format_remaining_heat_probabilities(prediction: dict) -> str:
+    parts = [
+        f"còn tăng {_format_c(prediction.get('predicted_remaining_heat_c'))}",
+        f"P(+>=2C) {_format_percent(prediction.get('prob_remaining_heat_ge_2_0'))}",
+        f"P(+>=3C) {_format_percent(prediction.get('prob_remaining_heat_ge_3_0'))}",
+        f"P(+>=4C) {_format_percent(prediction.get('prob_remaining_heat_ge_4_0'))}",
+    ]
+    if prediction.get("prob_tmax_already_reached") is not None:
+        parts.append(f"P(đã đạt Tmax) {_format_percent(prediction.get('prob_tmax_already_reached'))}")
+    return "Còn lại: " + ", ".join(parts)
+
+
+def _format_future_curve(prediction: dict) -> str | None:
+    future_curve = prediction.get("future_curve")
+    if not isinstance(future_curve, dict) or not future_curve:
+        return None
+    items = sorted(future_curve.items())[:4]
+    return " -> ".join(f"{timestamp[-5:]} {_format_c(value)}" for timestamp, value in items)
+
+
+def _format_freshness(prediction: dict) -> str:
+    lag = prediction.get("last_observation_lag_minutes")
+    fresh = prediction.get("data_fresh_enough")
+    parts = []
+    if lag is not None:
+        parts.append(f"trễ {lag} phút")
+    if fresh is not None:
+        parts.append("dữ liệu mới" if fresh else "dữ liệu cũ")
+    return f" ({', '.join(parts)})" if parts else ""
+
+
+def _threshold_from_slug(slug: str) -> float:
+    return float(slug.removesuffix("c").replace("p", "."))
+
+
+def _translate_phase(value: object) -> str:
+    return {
+        "pre_peak_ramp": "đang tăng trước đỉnh",
+        "peak_plateau": "gần vùng đỉnh/đi ngang",
+        "post_peak_decline": "sau đỉnh, đang giảm",
+        "uncertain_transition": "chuyển pha chưa chắc chắn",
+    }.get(str(value), "không rõ")
+
+
+def _translate_warning(value: object) -> str:
+    return {
+        "low": "thấp",
+        "watch_false_plateau": "cần theo dõi plateau giả",
+        "high_late_warming_risk": "cao",
+        "high_extreme_late_warming_risk": "rất cao",
+    }.get(str(value), str(value) if value is not None else "không rõ")
+
+
+def _translate_warning_reasons(text: str) -> str:
+    replacements = {
+        "classifier probability for remaining heat >= 2C is high": "xác suất còn tăng >=2C cao",
+        "classifier probability for remaining heat >= 3C is high": "xác suất còn tăng >=3C cao",
+        "classifier probability for remaining heat >= 4C is high": "xác suất còn tăng >=4C cao",
+        "point forecast may be too low": "dự báo điểm có thể thấp hơn thực tế",
+    }
+    for source, target in replacements.items():
+        text = text.replace(source, target)
+    return text
+
+
+def _translate_recommended_action(value: str) -> str:
+    return {
+        "Do not treat point forecast as final; update at next cutoff.": (
+            "Không xem dự báo điểm là kết luận cuối; nên cập nhật ở cutoff kế tiếp."
+        ),
+        "Point forecast can be used with normal interval uncertainty.": (
+            "Có thể dùng dự báo điểm cùng khoảng bất định như bình thường."
+        ),
+    }.get(value, value)
 
 
 def _format_c(value: object) -> str:
