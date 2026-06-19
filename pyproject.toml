@@ -25,6 +25,11 @@ rksi-build-heat-risk-dataset = "rksi_tmax.cli:build_heat_risk_dataset_main"
 rksi-train-heat-risk = "rksi_tmax.cli:train_heat_risk_main"
 rksi-validate-heat-risk = "rksi_tmax.cli:validate_heat_risk_main"
 rksi-predict-heat-risk = "rksi_tmax.cli:predict_heat_risk_main"
+rksi = "rksi_tmax.cli:rksi_main"
+rkpk = "rksi_tmax.cli:rkpk_main"
+rjtt = "rksi_tmax.cli:rjtt_main"
+wsss = "rksi_tmax.cli:wsss_main"
+rksi-telegram-report = "rksi_tmax.telegram_report:telegram_report_main"
 
 [dependency-groups]
 dev = [

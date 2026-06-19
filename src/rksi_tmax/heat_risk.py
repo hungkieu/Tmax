@@ -628,6 +628,7 @@ def predict_heat_risk(
             underprediction_probabilities,
         )
     )
+    result["weather_context"] = _weather_context(row.iloc[0])
     result.update(_phase_prediction(bundle.get("phase_classifier"), row[extended_columns]))
     future_curve = _future_curve_output(
         bundle.get("curve_models", {}),
@@ -698,28 +699,32 @@ def format_heat_risk_explanation(prediction: dict) -> str:
 
     lines = [
         "",
-        "=== Giai thich de doc ===",
-        f"Station {station}, ngay local {local_date}, du lieu tinh den {cutoff}.",
+        "=== Giải thích dễ đọc ===",
+        f"Station {station}, ngày local {local_date}, dữ liệu tính đến {cutoff}.",
         (
-            "Nhiet do cao nhat da quan sat den cutoff la "
-            f"{_format_c(observed_max)}; nhiet do moi nhat la {_format_c(last_temp)}."
+            "Nhiệt độ cao nhất đã quan sát đến cutoff là "
+            f"{_format_c(observed_max)}; nhiệt độ mới nhất là {_format_c(last_temp)}."
         ),
         (
-            "Model du bao tu sau cutoff den cuoi ngay con co the tang them khoang "
-            f"{_format_c(remaining)}, nen Tmax du bao la {_format_c(predicted_tmax)}."
+            "Model dự báo từ sau cutoff đến cuối ngày còn có thể tăng thêm khoảng "
+            f"{_format_c(remaining)}, nên Tmax dự báo là {_format_c(predicted_tmax)}."
         ),
         (
-            "Khoang bat dinh 80% cho Tmax nam trong khoang "
-            f"{_format_c(interval_low)} den {_format_c(interval_high)}."
+            "Khoảng bất định 80% cho Tmax nằm trong khoảng "
+            f"{_format_c(interval_low)} đến {_format_c(interval_high)}."
         ),
         (
-            "Trang thai nhiet hien tai: "
-            f"{_translate_phase(phase)}. Muc rui ro tang muon: {_translate_risk(late_risk)}."
+            "Trạng thái nhiệt hiện tại: "
+            f"{_translate_phase(phase)}. Mức rủi ro tăng muộn: {_translate_risk(late_risk)}."
         ),
-        f"Canh bao van hanh: {_translate_warning(warning)}.",
+        f"Cảnh báo vận hành: {_translate_warning(warning)}.",
     ]
+    weather_lines = _format_weather_context(prediction.get("weather_context"))
+    if weather_lines:
+        lines.append("Nhận xét thời tiết METAR:")
+        lines.extend(f"- {line}" for line in weather_lines)
     if p_reached is not None:
-        lines.append(f"Xac suat Tmax da dat dinh ngay luc nay: {_format_percent(p_reached)}.")
+        lines.append(f"Xác suất Tmax đã đạt đỉnh lúc này: {_format_percent(p_reached)}.")
     probabilities = []
     if p_ge_2 is not None:
         probabilities.append(f">=2C: {_format_percent(p_ge_2)}")
@@ -728,29 +733,29 @@ def format_heat_risk_explanation(prediction: dict) -> str:
     if p_ge_4 is not None:
         probabilities.append(f">=4C: {_format_percent(p_ge_4)}")
     if probabilities:
-        lines.append("Xac suat con tang them sau cutoff: " + ", ".join(probabilities) + ".")
+        lines.append("Xác suất còn tăng thêm sau cutoff: " + ", ".join(probabilities) + ".")
 
     reasons = prediction.get("warning_reasons") or []
     if reasons:
-        lines.append("Ly do can chu y:")
+        lines.append("Lý do cần chú ý:")
         lines.extend(f"- {_translate_warning_reason(reason)}" for reason in reasons)
 
     if update_next:
-        action = "nen cap nhat" if update_recommended else "khong bat buoc cap nhat"
-        lines.append(f"Moc tiep theo: {update_next}; he thong danh gia la {action}.")
+        action = "nên cập nhật" if update_recommended else "không bắt buộc cập nhật"
+        lines.append(f"Mốc tiếp theo: {update_next}; hệ thống đánh giá là {action}.")
     if prediction.get("recommended_action"):
-        lines.append(f"Hanh dong goi y: {_translate_recommended_action(prediction['recommended_action'])}")
+        lines.append(f"Hành động gợi ý: {_translate_recommended_action(prediction['recommended_action'])}")
     if prediction.get("plot_path"):
-        lines.append(f"Bieu do curve da ghi tai: {prediction['plot_path']}")
+        lines.append(f"Biểu đồ curve đã ghi tại: {prediction['plot_path']}")
     return "\n".join(lines)
 
 
 def _format_c(value: object) -> str:
     if value is None:
-        return "khong co du lieu"
+        return "không có dữ liệu"
     try:
         if pd.isna(value):
-            return "khong co du lieu"
+            return "không có dữ liệu"
         return f"{float(value):.1f}C"
     except (TypeError, ValueError):
         return str(value)
@@ -758,10 +763,10 @@ def _format_c(value: object) -> str:
 
 def _format_percent(value: object) -> str:
     if value is None:
-        return "khong co du lieu"
+        return "không có dữ liệu"
     try:
         if pd.isna(value):
-            return "khong co du lieu"
+            return "không có dữ liệu"
         return f"{float(value) * 100:.1f}%"
     except (TypeError, ValueError):
         return str(value)
@@ -769,57 +774,57 @@ def _format_percent(value: object) -> str:
 
 def _translate_phase(value: str) -> str:
     translations = {
-        "pre_peak_ramp": "dang tang truoc dinh nhiet",
-        "peak_plateau": "dang o vung dinh/di ngang",
-        "post_peak_decline": "co kha nang da qua dinh va dang giam",
-        "uncertain_transition": "chuyen pha chua chac chan",
-        "unknown": "khong xac dinh",
+        "pre_peak_ramp": "đang tăng trước đỉnh nhiệt",
+        "peak_plateau": "đang ở vùng đỉnh/đi ngang",
+        "post_peak_decline": "có khả năng đã qua đỉnh và đang giảm",
+        "uncertain_transition": "chuyển pha chưa chắc chắn",
+        "unknown": "không xác định",
     }
     return translations.get(value, value)
 
 
 def _translate_risk(value: str) -> str:
     translations = {
-        "low": "thap",
-        "moderate": "vua phai",
-        "elevated": "cao hon binh thuong",
+        "low": "thấp",
+        "moderate": "vừa phải",
+        "elevated": "cao hơn bình thường",
         "high": "cao",
-        "unknown": "khong xac dinh",
+        "unknown": "không xác định",
     }
     return translations.get(value, value)
 
 
 def _translate_warning(value: str) -> str:
     translations = {
-        "low": "thap, chua co tin hieu canh bao dac biet",
-        "watch_false_plateau": "can theo doi false plateau",
-        "elevated_late_warming_risk": "co rui ro tang nhiet muon",
-        "high_late_warming_risk": "rui ro tang nhiet muon cao",
-        "high_extreme_late_warming_risk": "rui ro tang nhiet muon rat cao",
-        "unknown": "khong xac dinh",
+        "low": "thấp, chưa có tín hiệu cảnh báo đặc biệt",
+        "watch_false_plateau": "cần theo dõi false plateau",
+        "elevated_late_warming_risk": "có rủi ro tăng nhiệt muộn",
+        "high_late_warming_risk": "rủi ro tăng nhiệt muộn cao",
+        "high_extreme_late_warming_risk": "rủi ro tăng nhiệt muộn rất cao",
+        "unknown": "không xác định",
     }
     return translations.get(value, value)
 
 
 def _translate_warning_reason(value: str) -> str:
     translations = {
-        "cutoff before or near noon": "cutoff van con truoc hoac gan giua trua",
-        "temperature flat for at least 90 minutes": "nhiet do di ngang it nhat 90 phut",
+        "cutoff before or near noon": "cutoff vẫn còn trước hoặc gần giữa trưa",
+        "temperature flat for at least 90 minutes": "nhiệt độ đi ngang ít nhất 90 phút",
         "rain/low cloud/MVFR or low visibility recently": (
-            "gan day co mua, may thap, dieu kien bay kem hoac tam nhin thap"
+            "gần đây có mưa, mây thấp, điều kiện bay kém hoặc tầm nhìn thấp"
         ),
-        "latest temperature equals observed max": "nhiet do moi nhat dang bang muc cao nhat da quan sat",
-        "cutoff before typical monthly peak time": "cutoff van truoc gio dinh nhiet thuong gap cua thang",
+        "latest temperature equals observed max": "nhiệt độ mới nhất đang bằng mức cao nhất đã quan sát",
+        "cutoff before typical monthly peak time": "cutoff vẫn trước giờ đỉnh nhiệt thường gặp của tháng",
         "classifier probability for remaining heat >= 2C is high": (
-            "model danh gia kha nang con tang them it nhat 2C la cao"
+            "model đánh giá khả năng còn tăng thêm ít nhất 2C là cao"
         ),
         "classifier probability for remaining heat >= 3C is high": (
-            "model danh gia kha nang con tang them it nhat 3C la cao"
+            "model đánh giá khả năng còn tăng thêm ít nhất 3C là cao"
         ),
         "classifier probability for remaining heat >= 4C is high": (
-            "model danh gia kha nang con tang them it nhat 4C la cao"
+            "model đánh giá khả năng còn tăng thêm ít nhất 4C là cao"
         ),
-        "point forecast may be too low": "du bao Tmax dang co nguy co bi thap",
+        "point forecast may be too low": "dự báo Tmax đang có nguy cơ bị thấp",
     }
     return translations.get(value, value)
 
@@ -827,13 +832,106 @@ def _translate_warning_reason(value: str) -> str:
 def _translate_recommended_action(value: str) -> str:
     translations = {
         "Do not treat point forecast as final; update at next cutoff.": (
-            "Khong nen xem du bao diem la ket luan cuoi; nen cap nhat lai o cutoff tiep theo."
+            "Không nên xem dự báo điểm là kết luận cuối; nên cập nhật lại ở cutoff tiếp theo."
         ),
         "Point forecast can be used with normal interval uncertainty.": (
-            "Co the dung du bao diem kem khoang bat dinh thong thuong."
+            "Có thể dùng dự báo điểm kèm khoảng bất định thông thường."
         ),
     }
     return translations.get(value, value)
+
+
+def _weather_context(row: pd.Series) -> dict:
+    context = {
+        "rain_seen_last_2h": _truthy_feature(row, "rain_seen_last_2h"),
+        "rain_seen_at_cutoff": _truthy_feature(row, "rain_seen_at_cutoff"),
+        "low_cloud_seen_last_2h": _truthy_feature(row, "low_cloud_seen_last_2h"),
+        "visibility_low_last_2h": _truthy_feature(row, "visibility_low_last_2h"),
+        "mvfr_or_worse_last_2h": _truthy_feature(row, "mvfr_or_worse_last_2h"),
+        "fog_observed_to_cutoff": _truthy_feature(row, "fog_observed_to_cutoff"),
+        "fog_cleared_to_cutoff": _truthy_feature(row, "fog_cleared_to_cutoff"),
+        "fog_developed_to_cutoff": _truthy_feature(row, "fog_developed_to_cutoff"),
+        "weather_suppression_score": _optional_float(row.get("weather_suppression_score")),
+        "visibility_min_last_2h_sm": _optional_float(row.get("visibility_min_last_2h")),
+        "ceiling_min_last_2h_ft": _optional_float(row.get("ceiling_min_last_2h")),
+        "lowest_ceiling_ft_to_cutoff": _optional_float(row.get("lowest_ceiling_ft_to_cutoff")),
+        "cloud_clearing_to_cutoff": _optional_float(row.get("cloud_clearing_to_cutoff")),
+        "cloud_increasing_to_cutoff": _optional_float(row.get("cloud_increasing_to_cutoff")),
+        "max_cloud_cover_to_cutoff": _optional_float(row.get("max_cloud_cover_to_cutoff")),
+        "last_cloud_cover_to_cutoff": _optional_float(row.get("last_cloud_cover_to_cutoff")),
+    }
+    context["summary"] = _weather_context_lines(context)
+    return context
+
+
+def _format_weather_context(context: object) -> list[str]:
+    if not isinstance(context, dict):
+        return []
+    summary = context.get("summary")
+    if isinstance(summary, list):
+        return [str(line) for line in summary if line]
+    return _weather_context_lines(context)
+
+
+def _weather_context_lines(context: dict) -> list[str]:
+    lines = []
+    if context.get("rain_seen_last_2h"):
+        when = "ngay tại cutoff" if context.get("rain_seen_at_cutoff") else "trong 2 giờ gần đây"
+        lines.append(f"Có dấu hiệu mưa/giáng thủy {when}; nắng lên sau cutoff có thể bị trì hoãn.")
+    if context.get("fog_observed_to_cutoff"):
+        if context.get("fog_cleared_to_cutoff"):
+            lines.append("Có sương mù/mù trước cutoff nhưng tín hiệu đã cải thiện dần.")
+        elif context.get("fog_developed_to_cutoff"):
+            lines.append("Sương mù/mù xuất hiện về gần cutoff, có thể kìm tăng nhiệt buổi sáng.")
+        else:
+            lines.append("Có sương mù/mù trong cửa sổ quan sát trước cutoff.")
+    if context.get("low_cloud_seen_last_2h"):
+        ceiling = context.get("ceiling_min_last_2h_ft")
+        if ceiling is not None:
+            lines.append(f"Có mây thấp trong 2 giờ gần đây; trần mây thấp nhất khoảng {ceiling:.0f} ft.")
+        else:
+            lines.append("Có mây thấp trong 2 giờ gần đây.")
+    if context.get("visibility_low_last_2h"):
+        visibility = context.get("visibility_min_last_2h_sm")
+        if visibility is not None:
+            lines.append(f"Tầm nhìn từng giảm thấp, tối thiểu khoảng {visibility:.1f} statute mile.")
+        else:
+            lines.append("Tầm nhìn từng giảm thấp trong 2 giờ gần đây.")
+    if context.get("mvfr_or_worse_last_2h"):
+        lines.append("Điều kiện bay có lúc ở mức MVFR hoặc xấu hơn, thường là tín hiệu hạn chế bức xạ mặt trời.")
+
+    clearing = context.get("cloud_clearing_to_cutoff")
+    increasing = context.get("cloud_increasing_to_cutoff")
+    if clearing is not None and clearing >= 2:
+        lines.append("Mây đang có xu hướng tan bớt trước cutoff, có thể mở cửa cho tăng nhiệt muộn.")
+    elif increasing is not None and increasing >= 2:
+        lines.append("Mây đang tăng lên trước cutoff, có thể làm chậm nhịp tăng nhiệt.")
+
+    score = context.get("weather_suppression_score")
+    if score is not None and score >= 1.0:
+        lines.append(f"Điểm ức chế thời tiết là {score:.1f}, nên cần thận trọng với kịch bản false plateau.")
+    if not lines:
+        lines.append("Không thấy tín hiệu mưa, mây thấp, tầm nhìn thấp hoặc điều kiện bay xấu đáng kể trong METAR gần cutoff.")
+    return lines
+
+
+def _truthy_feature(row: pd.Series, column: str) -> bool:
+    value = row.get(column)
+    if value is None or pd.isna(value):
+        return False
+    try:
+        return float(value) >= 0.5
+    except (TypeError, ValueError):
+        return bool(value)
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def plot_prediction_curve(

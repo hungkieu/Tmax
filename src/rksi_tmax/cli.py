@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from rksi_tmax.config import load_config
 from rksi_tmax.heat_risk import (
@@ -15,6 +19,15 @@ from rksi_tmax.heat_risk import (
 from rksi_tmax.metar_import import import_metar_file
 from rksi_tmax.metar_import import fetch_metar_text
 from rksi_tmax.storage import sync_duckdb_from_csv
+from rksi_tmax.storage import read_station_observations_from_duckdb
+
+
+SHORTCUT_STATIONS = {
+    "rksi": "configs/default.yaml",
+    "rkpk": "configs/rkpk.yaml",
+    "rjtt": "configs/rjtt.yaml",
+    "wsss": "configs/wsss.yaml",
+}
 
 
 def import_metar_main() -> None:
@@ -105,6 +118,7 @@ def validate_heat_risk_main() -> None:
 
 
 def predict_heat_risk_main() -> None:
+    _configure_stdout()
     parser = argparse.ArgumentParser(description="Predict remaining Tmax heat from an arbitrary cutoff.")
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--date", required=True, help="Local date in YYYY-MM-DD format.")
@@ -133,7 +147,84 @@ def predict_heat_risk_main() -> None:
     if args.plot is not None:
         plot_path = args.plot or _default_prediction_plot_path(config.station, args.date, args.cutoff_local)
         result["plot_path"] = str(plot_prediction_curve(config, result, plot_path))
-    print(json.dumps(result, indent=2))
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if args.explain:
+        print(format_heat_risk_explanation(result))
+
+
+def rksi_main() -> None:
+    station_shortcut_main("configs/default.yaml")
+
+
+def rkpk_main() -> None:
+    station_shortcut_main("configs/rkpk.yaml")
+
+
+def rjtt_main() -> None:
+    station_shortcut_main("configs/rjtt.yaml")
+
+
+def wsss_main() -> None:
+    station_shortcut_main("configs/wsss.yaml")
+
+
+def station_shortcut_main(config_path: str) -> None:
+    _configure_stdout()
+    config = load_config(config_path)
+    ingest_config = load_config("configs/default.yaml")
+    parser = argparse.ArgumentParser(
+        description=(
+            f"Fetch/import METAR and predict heat risk for {config.station}. "
+            "Defaults are intended for one-command operational use."
+        )
+    )
+    parser.add_argument("--date", help="Local forecast date YYYY-MM-DD. Defaults to today.")
+    parser.add_argument(
+        "--cutoff-local",
+        help="Local cutoff HH:MM. Defaults to current local hour rounded down.",
+    )
+    parser.add_argument("--hours", type=int, default=4, help="METAR fetch lookback hours.")
+    parser.add_argument("--metar-file", default="metar.txt")
+    parser.add_argument("--fetch", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--plot", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--explain", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--sync-duckdb", action=argparse.BooleanOptionalAction, default=True)
+    args = parser.parse_args()
+
+    now_local = datetime.now(ZoneInfo(config.timezone))
+    local_date = args.date or now_local.date().isoformat()
+    cutoff_local = args.cutoff_local or f"{now_local.hour:02d}:00"
+    metar_file = Path(args.metar_file)
+
+    if args.fetch:
+        fetch_result = fetch_metar_text(
+            stations=[station.upper() for station in SHORTCUT_STATIONS],
+            hours=args.hours,
+            output_path=metar_file,
+        )
+        print(json.dumps({"fetch": fetch_result}, indent=2, ensure_ascii=False))
+
+    db_was_missing = ingest_config.prefer_duckdb and not ingest_config.input_db.exists()
+    if metar_file.exists():
+        import_result = import_metar_file(
+            metar_path=metar_file,
+            csv_path=ingest_config.input_csv,
+            reference_date=local_date,
+            db_path=ingest_config.input_db if ingest_config.prefer_duckdb else None,
+        )
+        print(json.dumps({"import": import_result}, indent=2, ensure_ascii=False))
+
+    if args.sync_duckdb and (
+        db_was_missing or _duckdb_station_history_is_short(config_path, minimum_rows=100)
+    ):
+        sync_result = sync_duckdb_from_csv(ingest_config.raw_csv_files, ingest_config.input_db)
+        print(json.dumps({"sync_duckdb": sync_result}, indent=2, ensure_ascii=False))
+
+    result = predict_heat_risk(config, local_date, cutoff_local, dataset_path=None)
+    if args.plot:
+        plot_path = _default_prediction_plot_path(config.station, local_date, cutoff_local)
+        result["plot_path"] = str(plot_prediction_curve(config, result, plot_path))
+    print(json.dumps(result, indent=2, ensure_ascii=False))
     if args.explain:
         print(format_heat_risk_explanation(result))
 
@@ -141,3 +232,23 @@ def predict_heat_risk_main() -> None:
 def _default_prediction_plot_path(station: str, local_date: str, cutoff_local: str) -> str:
     safe_cutoff = cutoff_local.replace(":", "")
     return f"artifacts/{station.lower()}_{local_date}_{safe_cutoff}_temperature_curve.png"
+
+
+def _configure_stdout() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
+
+def _duckdb_station_history_is_short(config_path: str, minimum_rows: int) -> bool:
+    config = load_config(config_path)
+    if not config.prefer_duckdb or not config.input_db.exists():
+        return False
+    try:
+        observations = read_station_observations_from_duckdb(
+            config.input_db,
+            config.station,
+            ["station", "valid"],
+        )
+    except Exception:
+        return True
+    return len(observations) < minimum_rows

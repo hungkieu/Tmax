@@ -152,12 +152,20 @@ def test_format_heat_risk_explanation_includes_key_fields() -> None:
             "thermal_phase": "uncertain_transition",
             "late_warming_risk": "high",
             "late_warming_warning": "elevated_late_warming_risk",
+            "weather_context": {
+                "summary": [
+                    "Có mưa trong 2 giờ gần đây.",
+                    "Có mây thấp trong 2 giờ gần đây.",
+                ]
+            },
         }
     )
 
     assert "RJTT" in text
     assert "24.0C" in text
-    assert "co rui ro tang nhiet muon" in text
+    assert "có rủi ro tăng nhiệt muộn" in text
+    assert "Nhận xét thời tiết METAR" in text
+    assert "Có mưa trong 2 giờ gần đây." in text
 
 
 def test_update_recommendation_uses_policy_and_interval_width() -> None:

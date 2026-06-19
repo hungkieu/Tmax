@@ -96,13 +96,46 @@ Current supported station configs:
 After setup and training have been done once, the daily operation only needs
 new METAR data and prediction. You do not need to retrain every day.
 
-Change only `$DATE` and `$CUTOFF`, then run this whole block once in
-PowerShell:
+For a single station, use the short command. It fetches recent METAR data for
+all supported stations, imports new rows, keeps DuckDB sane if needed, then
+predicts that station with plot and Vietnamese explanation enabled:
+
+```powershell
+uv run rksi
+uv run rkpk
+uv run rjtt
+uv run wsss
+```
+
+The short commands default to today's local date and the current local hour
+rounded down as the cutoff. For example, if you run `uv run wsss` around 12:xx
+local time, it uses cutoff `12:00`.
+
+You can still override values when rerunning an old case:
+
+```powershell
+uv run wsss --date 2026-06-19 --cutoff-local 12:00
+```
+
+Use `--no-fetch` when `metar.txt` is already populated and you only want to
+import/predict:
+
+```powershell
+uv run wsss --no-fetch
+```
+
+To run all four stations in one command, use the daily script:
 
 ```powershell
 $DATE = "2026-06-19"
-$CUTOFF = "12:30"
+$CUTOFF = "10:00"
 
+uv run python scripts/daily_heat_risk.py --date $DATE --cutoff-local $CUTOFF --plot --explain
+```
+
+Manual equivalent:
+
+```powershell
 uv run rksi-fetch-metar --stations RKSI,RKPK,RJTT,WSSS --hours 48 --output metar.txt
 uv run rksi-import-metar --metar-file metar.txt --reference-date $DATE
 
@@ -115,8 +148,8 @@ uv run rksi-predict-heat-risk --config configs/wsss.yaml --date $DATE --cutoff-l
 The fetch command overwrites `metar.txt` with recent METAR lines. The import
 command appends new rows to the configured CSV and upserts the same rows into
 `artifacts/observations.duckdb`; duplicate `(station, valid)` rows are skipped.
-The `--plot` option writes a temperature-curve PNG under `artifacts/`. The
-`--explain` option prints a Vietnamese explanation after the JSON output for
+The `--plot` option writes temperature-curve PNG files under `artifacts/`. The
+`--explain` option prints Vietnamese explanations after the JSON output for
 non-technical readers.
 
 Daily prediction does not require rebuilding the dataset or retraining the
@@ -127,6 +160,53 @@ If DuckDB ever gets out of sync with raw CSV files, rebuild it:
 
 ```powershell
 uv run rksi-sync-duckdb
+```
+
+## Telegram Automation
+
+GitHub Actions sends a combined Telegram report at `08:15`, `09:15`,
+`10:15`, `11:15`, and `12:15` UTC+7. The workflow cron is UTC:
+
+```yaml
+15 1,2,3,4,5 * * *
+```
+
+Configure repository secrets:
+
+```text
+TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID
+```
+
+Do not commit the bot token. If a token was pasted into chat or logs, rotate it
+in BotFather before enabling the workflow.
+
+The scheduled workflow expects model files in a GitHub Release asset:
+
+```text
+tag: model-artifacts
+asset: model-artifacts.zip
+```
+
+The ZIP should contain model files under `artifacts/`, for example:
+
+```text
+artifacts/heat_risk_model.joblib
+artifacts/rkpk_heat_risk_model.joblib
+artifacts/rjtt_heat_risk_model.joblib
+artifacts/wsss_heat_risk_model.joblib
+```
+
+Generate the same combined report locally:
+
+```powershell
+uv run rksi-telegram-report --output artifacts/telegram_report.md --hours 4
+```
+
+Send an existing report file to Telegram:
+
+```powershell
+node scripts/send_telegram_report.mjs artifacts/telegram_report.md
 ```
 
 ## Heat-Risk Workflow

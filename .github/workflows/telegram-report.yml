@@ -1,0 +1,50 @@
+name: Telegram heat-risk report
+
+on:
+  schedule:
+    - cron: "15 1,2,3,4,5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dependencies
+        run: uv sync --locked
+
+      - name: Download model artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/model-artifacts artifacts
+          gh release download model-artifacts \
+            --pattern model-artifacts.zip \
+            --dir /tmp/model-artifacts \
+            --clobber
+          unzip -o /tmp/model-artifacts/model-artifacts.zip -d .
+
+      - name: Build report
+        run: uv run rksi-telegram-report --output artifacts/telegram_report.md --hours 4
+
+      - name: Send Telegram report
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node scripts/send_telegram_report.mjs artifacts/telegram_report.md

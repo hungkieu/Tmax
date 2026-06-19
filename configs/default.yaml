@@ -1,6 +1,6 @@
 station: RKSI
 timezone: Asia/Seoul
-cutoff_local: "12:00"
+cutoff_local: "09:00"
 complete_day_min_local: "23:00"
 target: tmax
 
@@ -19,10 +19,13 @@ heat_risk_cutoffs:
   - "12:00"
   - "13:00"
 heat_risk_thresholds_c:
+  - 27.0
   - 28.0
   - 29.0
   - 30.0
   - 31.0
+  - 32.0
+  - 33.0
 heat_risk_dataset_parquet: artifacts/heat_risk_dataset.parquet
 heat_risk_model_path: artifacts/heat_risk_model.joblib
 heat_risk_metrics_path: artifacts/heat_risk_metrics.json

@@ -134,7 +134,7 @@ def fetch_metar_text(
 def parse_metar(metar: str, reference_date: str | date | None = None) -> ParsedMetar:
     reference = _reference_date(reference_date)
     tokens = _clean_metar(metar).split()
-    if tokens and tokens[0] == "METAR":
+    if tokens and tokens[0] in {"METAR", "SPECI"}:
         tokens = tokens[1:]
     if len(tokens) < 3:
         raise ValueError(f"METAR line is too short: {metar}")

@@ -41,6 +41,19 @@ def test_parse_negative_temperature_and_cloud_layers() -> None:
     assert parsed.row["skyl2"] == "10000.00"
 
 
+def test_parse_speci_prefix_to_asos_row() -> None:
+    parsed = parse_metar(
+        "SPECI RKPK 180941Z 18006KT CAVOK 25/22 Q1008 RMK CIG250",
+        reference_date="2026-06-19",
+    )
+
+    assert parsed.station == "RKPK"
+    assert parsed.row["valid"] == "2026-06-18 09:41"
+    assert parsed.row["tmpf"] == "77.00"
+    assert parsed.row["dwpf"] == "71.60"
+    assert parsed.row["metar"] == "SPECI RKPK 180941Z 18006KT CAVOK 25/22 Q1008 RMK CIG250"
+
+
 def test_import_metar_file_skips_existing_station_valid(tmp_path: Path) -> None:
     csv_path = tmp_path / "asos.csv"
     metar_path = tmp_path / "metar.txt"
