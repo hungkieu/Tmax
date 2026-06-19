@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import pathlib
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -84,6 +86,12 @@ M1_FEATURE_PREFIXES = (
     "regime_break_",
     "tmax_lag_",
 )
+
+
+def _load_model_bundle(model_path: str | Path) -> dict:
+    if os.name != "nt":
+        pathlib.WindowsPath = pathlib.PosixPath  # type: ignore[misc,assignment]
+    return joblib.load(model_path)
 
 
 def build_heat_risk_dataset(
@@ -452,7 +460,7 @@ def validate_heat_risk_model(config: ProjectConfig) -> dict:
     dataset = load_heat_risk_table(config.heat_risk_dataset_parquet).dropna(
         subset=[TARGET_COLUMN, FINAL_TMAX_COLUMN]
     )
-    bundle = joblib.load(config.heat_risk_model_path)
+    bundle = _load_model_bundle(config.heat_risk_model_path)
     metrics = bundle["metrics"]
     columns = bundle["feature_columns"]
     extended_columns = bundle.get("extended_feature_columns", columns)
@@ -542,7 +550,7 @@ def predict_heat_risk(
     dataset_path: str | Path | None = None,
 ) -> dict:
     cutoff_local = _normalize_cutoff(cutoff_local)
-    bundle = joblib.load(config.heat_risk_model_path)
+    bundle = _load_model_bundle(config.heat_risk_model_path)
     columns = bundle["feature_columns"]
     extended_columns = bundle.get("extended_feature_columns", columns)
     row = _prediction_row(config, local_date, cutoff_local, dataset_path)
