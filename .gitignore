@@ -17,3 +17,4 @@ artifacts/*
 *.parquet
 *.duckdb
 *.duckdb.wal
+model-artifacts*.zip

@@ -198,6 +198,12 @@ artifacts/wsss_heat_risk_model.joblib
 artifacts/observations.duckdb
 ```
 
+Create the release ZIP locally:
+
+```powershell
+.\scripts\create_model_release.ps1 -Force
+```
+
 `artifacts/observations.duckdb` is the historical runtime database. Each
 scheduled workflow run downloads it from the release asset, appends fresh METAR
 lines into the tracked `metar.txt`, upserts those observations into the
