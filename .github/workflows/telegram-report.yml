@@ -45,7 +45,24 @@ jobs:
             --pattern model-artifacts.zip \
             --dir /tmp/model-artifacts \
             --clobber
-          unzip -o /tmp/model-artifacts/model-artifacts.zip -d .
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          root = Path(".").resolve()
+          with ZipFile("/tmp/model-artifacts/model-artifacts.zip") as archive:
+              for member in archive.infolist():
+                  name = member.filename.replace("\\", "/")
+                  target = (root / name).resolve()
+                  if not target.is_relative_to(root):
+                      raise RuntimeError(f"Unsafe zip member path: {member.filename}")
+                  if member.is_dir():
+                      target.mkdir(parents=True, exist_ok=True)
+                      continue
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  with archive.open(member) as source, target.open("wb") as dest:
+                      dest.write(source.read())
+          PY
 
       - name: Build report
         run: uv run rksi-telegram-report --output artifacts/telegram_report.md --hours 4
