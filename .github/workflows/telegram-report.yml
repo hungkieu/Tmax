@@ -6,7 +6,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: telegram-heat-risk-report
+  cancel-in-progress: false
 
 jobs:
   report:
@@ -42,6 +46,19 @@ jobs:
 
       - name: Build report
         run: uv run rksi-telegram-report --output artifacts/telegram_report.md --hours 4
+
+      - name: Commit updated METAR log
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add metar.txt
+          if git diff --cached --quiet; then
+            echo "No new METAR lines to commit."
+          else
+            git commit -m "Update METAR log"
+            git pull --rebase
+            git push
+          fi
 
       - name: Send Telegram report
         env:

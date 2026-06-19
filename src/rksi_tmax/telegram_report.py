@@ -67,12 +67,16 @@ def build_telegram_report(
     metar_path = Path(metar_file)
 
     fetch_result = None
+    append_result = None
     if fetch:
+        fetch_output = metar_path.with_name(f"{metar_path.name}.fetch")
         fetch_result = fetch_metar_text(
             stations=list(DEFAULT_STATIONS),
             hours=hours,
-            output_path=metar_path,
+            output_path=fetch_output,
         )
+        append_result = _append_unique_lines(fetch_output, metar_path)
+        fetch_output.unlink(missing_ok=True)
 
     db_was_missing = ingest_config.prefer_duckdb and not ingest_config.input_db.exists()
     import_result = None
@@ -85,7 +89,8 @@ def build_telegram_report(
         )
 
     sync_result = None
-    if sync_duckdb and (
+    can_sync_from_csv = all(path.exists() for path in ingest_config.raw_csv_files)
+    if sync_duckdb and can_sync_from_csv and (
         db_was_missing or _any_station_history_is_short(configs, minimum_rows=100)
     ):
         sync_result = sync_duckdb_from_csv(ingest_config.raw_csv_files, ingest_config.input_db)
@@ -120,6 +125,7 @@ def build_telegram_report(
             "output": str(output),
             "generated_at_utc": now_utc.isoformat(),
             "fetch": fetch_result,
+            "append_metar": append_result,
             "import": import_result,
             "sync_duckdb": sync_result,
             "stations": [
@@ -223,6 +229,33 @@ def _any_station_history_is_short(configs: list[ProjectConfig], minimum_rows: in
         if len(observations) < minimum_rows:
             return True
     return False
+
+
+def _append_unique_lines(source_path: Path, target_path: Path) -> dict:
+    source_lines = _read_nonempty_lines(source_path)
+    target_lines = _read_nonempty_lines(target_path)
+    existing = set(target_lines)
+    new_lines = [line for line in source_lines if line not in existing]
+    if new_lines:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with target_path.open("a", encoding="utf-8", newline="\n") as file:
+            if target_lines:
+                file.write("\n")
+            file.write("\n".join(new_lines))
+            file.write("\n")
+    return {
+        "source": str(source_path),
+        "target": str(target_path),
+        "read": len(source_lines),
+        "appended": len(new_lines),
+        "skipped_existing": len(source_lines) - len(new_lines),
+    }
+
+
+def _read_nonempty_lines(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def _configure_stdout() -> None:

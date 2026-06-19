@@ -195,7 +195,16 @@ artifacts/heat_risk_model.joblib
 artifacts/rkpk_heat_risk_model.joblib
 artifacts/rjtt_heat_risk_model.joblib
 artifacts/wsss_heat_risk_model.joblib
+artifacts/observations.duckdb
 ```
+
+`artifacts/observations.duckdb` is the historical runtime database. Each
+scheduled workflow run downloads it from the release asset, appends fresh METAR
+lines into the tracked `metar.txt`, upserts those observations into the
+runner-local DuckDB copy, predicts, and commits `metar.txt` back to the repo.
+The workflow does not push the updated DB back to GitHub; rebuild the DB/model
+release locally when you want the release baseline to include more completed
+days.
 
 Generate the same combined report locally:
 

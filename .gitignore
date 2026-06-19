@@ -5,6 +5,11 @@ __pycache__/
 .tmp/
 *.py[cod]
 
+# Local weather data files are large/generated and should not be pushed.
+*.csv
+*.txt
+!metar.txt
+
 artifacts/*
 !artifacts/.gitkeep
 
