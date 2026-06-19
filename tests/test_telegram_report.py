@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from rksi_tmax.telegram_report import format_telegram_report
+from rksi_tmax.config import ProjectConfig
+from rksi_tmax.telegram_report import _select_configured_cutoff, format_telegram_report
 
 
 def _prediction(station: str) -> dict:
@@ -69,7 +70,11 @@ def test_format_telegram_report_includes_all_station_summaries() -> None:
     assert "WSSS | 2026-06-19 | cutoff 12:00" in report
     assert "Dự báo Tmax: 31.2C" in report
     assert ">=33C 1%" in report
-    assert "Còn lại: còn tăng 1.2C" in report
+    assert "trung vị phân bố 31.1C" in report
+    assert "P50" not in report
+    assert "trễ 0 phút" not in report
+    assert "Còn lại: dự báo còn tăng 1.2C" in report
+    assert "xác suất còn tăng >=2C 35%" in report
     assert "Đường nhiệt tới: 12:30 30.5C -> 13:00 30.8C" in report
     assert "Weather: Có mây thấp" in report
 
@@ -92,3 +97,20 @@ def test_format_telegram_report_keeps_station_errors() -> None:
     assert "RKSI | 2026-06-19 | cutoff 12:00" in report
     assert "WSSS | 2026-06-19 | cutoff 12:00" in report
     assert "LỖI: model artifact missing" in report
+
+
+def test_select_configured_cutoff_clamps_to_trained_cutoff() -> None:
+    config = ProjectConfig(
+        station="RJTT",
+        timezone="Asia/Tokyo",
+        heat_risk_cutoffs=("09:00", "10:00", "11:00", "12:00", "13:00"),
+    )
+
+    assert _select_configured_cutoff(
+        config,
+        datetime(2026, 6, 19, 18, 54, tzinfo=timezone.utc),
+    ) == "13:00"
+    assert _select_configured_cutoff(
+        config,
+        datetime(2026, 6, 19, 8, 15, tzinfo=timezone.utc),
+    ) == "09:00"

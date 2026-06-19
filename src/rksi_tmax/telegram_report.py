@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from rksi_tmax.config import ProjectConfig, load_config
+from rksi_tmax.config import ProjectConfig, _hhmm_to_minutes, load_config
 from rksi_tmax.heat_risk import predict_heat_risk
 from rksi_tmax.metar_import import fetch_metar_text, import_metar_file
 from rksi_tmax.storage import read_station_observations_from_duckdb, sync_duckdb_from_csv
@@ -100,7 +100,7 @@ def build_telegram_report(
     for config in configs:
         local_now = now_utc.astimezone(ZoneInfo(config.timezone))
         local_date = local_now.date().isoformat()
-        cutoff_local = f"{local_now.hour:02d}:00"
+        cutoff_local = _select_configured_cutoff(config, local_now)
         try:
             prediction = predict_heat_risk(config, local_date, cutoff_local, dataset_path=None)
             entries.append({"status": "ok", "prediction": prediction})
@@ -156,6 +156,13 @@ def format_telegram_report(entries: list[dict], generated_at_utc: datetime) -> s
     return "\n".join(lines).strip() + "\n"
 
 
+def _select_configured_cutoff(config: ProjectConfig, local_now: datetime) -> str:
+    current_minutes = local_now.hour * 60 + local_now.minute
+    configured = sorted(config.heat_risk_cutoffs, key=_hhmm_to_minutes)
+    eligible = [cutoff for cutoff in configured if _hhmm_to_minutes(cutoff) <= current_minutes]
+    return eligible[-1] if eligible else configured[0]
+
+
 def _format_prediction_entry(prediction: dict) -> list[str]:
     interval_low = prediction.get("prediction_interval_80_low_c")
     interval_high = prediction.get("prediction_interval_80_high_c")
@@ -165,20 +172,19 @@ def _format_prediction_entry(prediction: dict) -> list[str]:
     threshold_text = _format_threshold_probabilities(prediction)
     remaining_heat_text = _format_remaining_heat_probabilities(prediction)
     curve_text = _format_future_curve(prediction)
-    freshness = _format_freshness(prediction)
     warning_reasons = prediction.get("warning_reasons")
     warning_text = "; ".join(warning_reasons[:2]) if isinstance(warning_reasons, list) else None
     output = [
         f"{prediction['station']} | {prediction['local_date']} | cutoff {prediction['cutoff_local']}",
         (
             f"Dự báo Tmax: {_format_c(prediction.get('predicted_tmax_c'))}; "
-            f"P50 {_format_c(prediction.get('prediction_p50_c'))}; "
+            f"trung vị phân bố {_format_c(prediction.get('prediction_p50_c'))}; "
             f"khoảng 80% {_format_c(interval_low)}-{_format_c(interval_high)}"
         ),
         (
             f"Đã quan sát: max {_format_c(prediction.get('observed_max_to_cutoff_c'))}; "
             f"mới nhất {_format_c(prediction.get('last_temp_to_cutoff_c'))} "
-            f"lúc {prediction.get('last_observation_local', 'không rõ')}{freshness}"
+            f"lúc {prediction.get('last_observation_local', 'không rõ')}"
         ),
         (
             f"Xác suất ngưỡng: {threshold_text}"
@@ -235,13 +241,13 @@ def _format_threshold_probabilities(prediction: dict) -> str:
 
 def _format_remaining_heat_probabilities(prediction: dict) -> str:
     parts = [
-        f"còn tăng {_format_c(prediction.get('predicted_remaining_heat_c'))}",
-        f"P(+>=2C) {_format_percent(prediction.get('prob_remaining_heat_ge_2_0'))}",
-        f"P(+>=3C) {_format_percent(prediction.get('prob_remaining_heat_ge_3_0'))}",
-        f"P(+>=4C) {_format_percent(prediction.get('prob_remaining_heat_ge_4_0'))}",
+        f"dự báo còn tăng {_format_c(prediction.get('predicted_remaining_heat_c'))}",
+        f"xác suất còn tăng >=2C {_format_percent(prediction.get('prob_remaining_heat_ge_2_0'))}",
+        f">=3C {_format_percent(prediction.get('prob_remaining_heat_ge_3_0'))}",
+        f">=4C {_format_percent(prediction.get('prob_remaining_heat_ge_4_0'))}",
     ]
     if prediction.get("prob_tmax_already_reached") is not None:
-        parts.append(f"P(đã đạt Tmax) {_format_percent(prediction.get('prob_tmax_already_reached'))}")
+        parts.append(f"xác suất đã đạt Tmax {_format_percent(prediction.get('prob_tmax_already_reached'))}")
     return "Còn lại: " + ", ".join(parts)
 
 
@@ -251,17 +257,6 @@ def _format_future_curve(prediction: dict) -> str | None:
         return None
     items = sorted(future_curve.items())[:4]
     return " -> ".join(f"{timestamp[-5:]} {_format_c(value)}" for timestamp, value in items)
-
-
-def _format_freshness(prediction: dict) -> str:
-    lag = prediction.get("last_observation_lag_minutes")
-    fresh = prediction.get("data_fresh_enough")
-    parts = []
-    if lag is not None:
-        parts.append(f"trễ {lag} phút")
-    if fresh is not None:
-        parts.append("dữ liệu mới" if fresh else "dữ liệu cũ")
-    return f" ({', '.join(parts)})" if parts else ""
 
 
 def _threshold_from_slug(slug: str) -> float:

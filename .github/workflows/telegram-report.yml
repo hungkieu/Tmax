@@ -4,9 +4,6 @@ name: Telegram heat-risk report
   schedule:
     - cron: "15 1,2,3,4,5 * * *"
   workflow_dispatch:
-  push:
-    paths:
-      - ".github/workflows/telegram-report.yml"
 
 permissions:
   contents: write
