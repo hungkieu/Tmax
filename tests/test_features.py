@@ -141,6 +141,53 @@ def test_incomplete_local_day_is_kept_for_prediction_without_target() -> None:
     assert dataset.loc[1, "tmpf_last_to_cutoff"] == 62.0
 
 
+def test_incomplete_previous_day_does_not_drop_live_prediction_day() -> None:
+    config = ProjectConfig(cutoff_local="09:00", complete_day_min_local="23:00")
+    observations = pd.DataFrame(
+        {
+            "station": ["RKSI"] * 6,
+            "valid_local": pd.to_datetime(
+                [
+                    "2024-06-01 08:00+09:00",
+                    "2024-06-01 23:30+09:00",
+                    "2024-06-02 08:00+09:00",
+                    "2024-06-02 12:00+09:00",
+                    "2024-06-03 08:00+09:00",
+                    "2024-06-03 12:00+09:00",
+                ]
+            ),
+            "tmpf": [60.0, 90.0, 61.0, 95.0, 62.0, 100.0],
+            "dwpf": [50.0, 70.0, 51.0, 72.0, 52.0, 75.0],
+            "relh": [70.0, 40.0, 70.0, 40.0, 70.0, 40.0],
+            "drct": [100.0, 200.0, 100.0, 200.0, 100.0, 200.0],
+            "sknt": [5.0, 20.0, 5.0, 20.0, 5.0, 20.0],
+            "p01i": [0.0] * 6,
+            "alti": [29.9, 29.8, 29.9, 29.8, 29.9, 29.8],
+            "mslp": [1010.0, 1008.0, 1010.0, 1008.0, 1010.0, 1008.0],
+            "vsby": [6.0] * 6,
+            "gust": [None] * 6,
+            "skyl1": [3000.0, 1000.0, 3000.0, 1000.0, 3000.0, 1000.0],
+            "skyl2": [None] * 6,
+            "skyl3": [None] * 6,
+            "skyl4": [None] * 6,
+            "feel": [60.0, 95.0, 61.0, 98.0, 62.0, 105.0],
+            "skyc1": ["FEW", "OVC", "FEW", "OVC", "FEW", "OVC"],
+            "skyc2": [None] * 6,
+            "skyc3": [None] * 6,
+            "skyc4": [None] * 6,
+            "wxcodes": [None, "RA", None, "RA", None, "RA"],
+        }
+    )
+
+    dataset = make_daily_dataset(observations, config)
+
+    assert dataset["local_date"].tolist() == ["2024-06-02", "2024-06-03"]
+    assert dataset.loc[0, "target_complete"] == 0
+    assert dataset.loc[1, "target_complete"] == 0
+    assert dataset.loc[1, "tmax_prev1_c"] == dataset.loc[0, "tmax_prev1_c"]
+    assert dataset.loc[1, "tmpf_last_to_cutoff"] == 62.0
+
+
 def test_remaining_heat_climatology_uses_prior_days_only() -> None:
     config = ProjectConfig(cutoff_local="09:00", complete_day_min_local="10:00")
     observations = pd.DataFrame(

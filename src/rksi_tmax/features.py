@@ -431,17 +431,41 @@ def _add_calendar_features(dataset: pd.DataFrame) -> pd.DataFrame:
 
 def _add_lag_features(dataset: pd.DataFrame) -> pd.DataFrame:
     frame = dataset.copy().sort_values("local_date")
-    frame["tmax_prev1_c"] = frame["tmax_c"].shift(1)
-    frame["tmin_prev1_c"] = frame["tmin_c"].shift(1)
+    frame["tmax_prev1_c"] = _previous_non_null(frame["tmax_c"], lag=1)
+    frame["tmin_prev1_c"] = _previous_non_null(frame["tmin_c"], lag=1)
     frame["tmpc_09_prev1"] = frame["tmpc_last_to_cutoff"].shift(1)
     for lag in (1, 2, 3):
-        frame[f"tmax_lag_{lag}_c"] = frame["tmax_c"].shift(lag)
+        frame[f"tmax_lag_{lag}_c"] = _previous_non_null(frame["tmax_c"], lag=lag)
     for window in (3, 7, 14):
-        shifted_tmax = frame["tmax_c"].shift(1)
-        shifted_tmin = frame["tmin_c"].shift(1)
-        frame[f"tmax_roll{window}_mean_c"] = shifted_tmax.rolling(window, min_periods=1).mean()
-        frame[f"tmin_roll{window}_mean_c"] = shifted_tmin.rolling(window, min_periods=1).mean()
+        frame[f"tmax_roll{window}_mean_c"] = _previous_non_null_rolling_mean(
+            frame["tmax_c"],
+            window,
+        )
+        frame[f"tmin_roll{window}_mean_c"] = _previous_non_null_rolling_mean(
+            frame["tmin_c"],
+            window,
+        )
     return frame
+
+
+def _previous_non_null(series: pd.Series, lag: int) -> pd.Series:
+    history: list[float] = []
+    values = []
+    for value in series:
+        values.append(history[-lag] if len(history) >= lag else np.nan)
+        if pd.notna(value):
+            history.append(float(value))
+    return pd.Series(values, index=series.index)
+
+
+def _previous_non_null_rolling_mean(series: pd.Series, window: int) -> pd.Series:
+    history: list[float] = []
+    values = []
+    for value in series:
+        values.append(float(np.mean(history[-window:])) if history else np.nan)
+        if pd.notna(value):
+            history.append(float(value))
+    return pd.Series(values, index=series.index)
 
 
 def _add_remaining_heat_climatology(dataset: pd.DataFrame) -> pd.DataFrame:
