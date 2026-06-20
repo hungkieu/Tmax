@@ -144,15 +144,43 @@ feature_missing_threshold: 0.85
 
 Change these only when you are intentionally revalidating the model behavior.
 
-## Adding A New Station
+## Adding A New Location
 
-1. Copy the closest existing config, for example:
+Use this process when adding another ICAO station/location.
+
+### 1. Prepare Historical Data
+
+Create or obtain a CSV with ASOS-style columns. At minimum the training path
+needs:
+
+```text
+station, valid, tmpf
+```
+
+Useful predictors include dewpoint, humidity, wind, pressure, visibility,
+cloud layers, weather codes, and raw METAR text:
+
+```text
+dwpf, relh, drct, sknt, p01i, alti, mslp, vsby, gust,
+skyc1, skyc2, skyc3, skyc4, skyl1, skyl2, skyl3, skyl4,
+wxcodes, feel, metar
+```
+
+`valid` must be UTC in this format:
+
+```text
+YYYY-MM-DD HH:MM
+```
+
+### 2. Create A Config
+
+Copy the closest existing config:
 
 ```powershell
 Copy-Item configs/rjtt.yaml configs/new_station.yaml
 ```
 
-2. Edit:
+Edit station identity, timezone, source path, and artifact paths:
 
 ```yaml
 station: XXXX
@@ -163,20 +191,75 @@ heat_risk_model_path: artifacts/xxxx_heat_risk_model.joblib
 heat_risk_metrics_path: artifacts/xxxx_heat_risk_metrics.json
 ```
 
-3. Add the CSV to `raw_csv_files` if you want `rksi-sync-duckdb` to load it.
+Use an IANA timezone such as `Asia/Seoul`, `Asia/Tokyo`, or
+`Asia/Singapore`. `--date`, `--cutoff-local`, `cutoff_local`, and
+`complete_day_min_local` are interpreted in this station timezone.
 
-4. Sync, build, train, validate:
+### 3. Add The CSV To DuckDB Sync
+
+Add the new CSV to `raw_csv_files` so `rksi-sync-duckdb` loads it:
+
+```yaml
+raw_csv_files:
+  - asos.csv
+  - RJTT.csv
+  - WSSS.csv
+  - NEW_STATION.csv
+```
+
+Then sync:
 
 ```powershell
 uv run rksi-sync-duckdb --config configs/new_station.yaml
+```
+
+### 4. Build, Train, Validate
+
+```powershell
 uv run rksi-build-heat-risk-dataset --config configs/new_station.yaml
 uv run rksi-train-heat-risk --config configs/new_station.yaml
 uv run rksi-validate-heat-risk --config configs/new_station.yaml
 ```
 
-5. Predict:
+Review the validation JSON/PNG files next to `heat_risk_metrics_path` before
+using the model operationally.
+
+### 5. Predict
 
 ```powershell
 uv run rksi-predict-heat-risk --config configs/new_station.yaml --date 2026-06-19 --cutoff-local 12:00 --plot --explain
 ```
 
+The cutoff is local time for the new station, based on `timezone` in the
+config.
+
+### 6. Add To Combined Telegram Report
+
+Pass the config explicitly:
+
+```powershell
+uv run rksi-telegram-report --config configs/default.yaml --config configs/new_station.yaml
+```
+
+To make the new location part of the default automated report, update
+`DEFAULT_CONFIG_PATHS` and `DEFAULT_STATIONS` in
+`src/rksi_tmax/telegram_report.py`, then update tests.
+
+### 7. Add A Shortcut Command
+
+Shortcut commands such as `uv run wsss` are registered in two places:
+
+1. Add a script entry in `pyproject.toml`.
+2. Add the shortcut function and config mapping in `src/rksi_tmax/cli.py`.
+
+If you do not need a shortcut, keep using `rksi-predict-heat-risk --config`.
+
+### 8. Refresh Local Model Artifacts
+
+After training a new operational model, keep the generated files under
+`artifacts/` with station-specific names. If you still want a portable archive
+for backup or manual transfer, rebuild the ZIP:
+
+```powershell
+.\scripts\create_model_release.ps1 -Force
+```

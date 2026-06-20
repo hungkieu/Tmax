@@ -107,6 +107,11 @@ The diagnostics image includes:
 uv run rksi-predict-heat-risk --date 2026-06-18 --cutoff-local 10:00
 ```
 
+`--date` and `--cutoff-local` are interpreted in the timezone configured for
+the selected station. They are not device-local time and not UTC. For example,
+`--config configs/wsss.yaml --cutoff-local 10:00` means `10:00` in
+`Asia/Singapore`.
+
 To also create a daily temperature-curve PNG:
 
 ```powershell
