@@ -12,8 +12,10 @@ The operational forecast answers:
 - short future temperature curve through the next 3 hours;
 - whether the next cutoff update is worth running.
 
-`predicted_tmax_c` is the operational forecast. Thermal phase, late-warming
-risk, and the future curve are supporting context.
+`predicted_tmax_c` is the operational forecast from the method selected by
+validation. RKSI can also use Open-Meteo daily forecast features; reports show
+both the raw Open-Meteo Tmax and the M3 corrected Tmax when available. Thermal
+phase, late-warming risk, and the future curve are supporting context.
 
 ## Table Of Contents
 
@@ -21,6 +23,7 @@ risk, and the future curve are supporting context.
 - [Core Concepts](#core-concepts)
 - [Supported Stations](#supported-stations)
 - [Daily Operation](#daily-operation)
+- [Local UI Dashboard](#local-ui-dashboard)
 - [Telegram Automation](#telegram-automation)
 - [Training Workflow](#training-workflow)
 - [Documentation](#documentation)
@@ -54,6 +57,12 @@ Run a specific date/cutoff:
 
 ```powershell
 uv run rksi-predict-heat-risk --config configs/default.yaml --date 2026-06-20 --cutoff-local 11:00 --plot --explain
+```
+
+Open the local dashboard:
+
+```powershell
+uv run rksi-ui
 ```
 
 ## Core Concepts
@@ -164,6 +173,25 @@ uv run rksi-predict-heat-risk --config configs/wsss.yaml --date 2026-06-20 --cut
 Daily prediction does not require rebuilding the dataset or retraining. Rebuild
 and retrain only after adding enough completed historical days, changing
 thresholds/cutoffs, changing station config, or changing model code.
+
+## Local UI Dashboard
+
+Run the Streamlit dashboard locally:
+
+```powershell
+uv run rksi-ui
+```
+
+The UI lets you choose a YAML config/location, then use three tabs:
+
+- `Locations`: create a new station YAML config and optional empty ASOS CSV header.
+- `METAR`: fetch station METAR, import station-scoped rows, sync DuckDB, and verify latest observations.
+- `Train / Validate`: build the heat-risk dataset, train, validate, and inspect metrics/artifacts.
+- `Predict`: choose latest database observation, config default cutoff, or a custom cutoff; choose Auto/M1/M3 when supported; optionally enter a bet temperature and generate the explanation/plot.
+
+The sidebar also has a `Delete location config` expander. It deletes only the selected YAML config after station-code confirmation; CSV, DuckDB rows, and model artifacts are kept.
+
+Implementation context for future UI edits is in `docs/ui-dashboard-context.md`.
 
 ## Telegram Automation
 

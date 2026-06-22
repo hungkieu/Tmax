@@ -15,6 +15,7 @@ dependencies = [
     "pyyaml>=6.0",
     "scikit-learn>=1.5",
     "seaborn>=0.13",
+    "streamlit>=1.36",
 ]
 
 [project.scripts]
@@ -30,6 +31,7 @@ rkpk = "rksi_tmax.cli:rkpk_main"
 rjtt = "rksi_tmax.cli:rjtt_main"
 wsss = "rksi_tmax.cli:wsss_main"
 rksi-telegram-report = "rksi_tmax.telegram_report:telegram_report_main"
+rksi-ui = "rksi_tmax.ui_app:run"
 
 [dependency-groups]
 dev = [

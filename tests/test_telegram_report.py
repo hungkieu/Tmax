@@ -30,6 +30,9 @@ def _prediction(station: str) -> dict:
             "33c": 0.01,
         },
         "predicted_remaining_heat_c": 1.2,
+        "openmeteo_features_available": True,
+        "openmeteo_forecast_tmax_c": 30.8,
+        "openmeteo_predicted_tmax_c": 31.2,
         "prob_remaining_heat_ge_2_0": 0.35,
         "prob_remaining_heat_ge_3_0": 0.12,
         "prob_remaining_heat_ge_4_0": 0.02,
@@ -75,6 +78,7 @@ def test_format_telegram_report_includes_all_station_summaries() -> None:
     assert "trễ 0 phút" not in report
     assert "Còn lại: dự báo còn tăng 1.2C" in report
     assert "xác suất còn tăng >=2C 35%" in report
+    assert "Open-Meteo: Tmax 30.8C; M3 sau hiệu chỉnh 31.2C" in report
     assert "Đường nhiệt tới: 12:30 30.5C -> 13:00 30.8C" in report
     assert "Weather: Có mây thấp" in report
 

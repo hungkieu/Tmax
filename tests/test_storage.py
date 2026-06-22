@@ -29,6 +29,38 @@ def test_sync_duckdb_from_csv_dedupes_station_valid(tmp_path: Path) -> None:
     assert len(observations) == 1
 
 
+def test_sync_duckdb_from_csv_preserves_other_stations(tmp_path: Path) -> None:
+    rksi_csv = tmp_path / "rksi.csv"
+    wihh_csv = tmp_path / "wihh.csv"
+    db_path = tmp_path / "observations.duckdb"
+    _write_asos_csv(
+        rksi_csv,
+        [{"station": "RKSI", "valid": "2026-06-18 00:00", "tmpf": "75.20"}],
+    )
+    _write_asos_csv(
+        wihh_csv,
+        [{"station": "WIHH", "valid": "2026-06-18 00:00", "tmpf": "86.00"}],
+    )
+
+    sync_duckdb_from_csv([rksi_csv], db_path)
+    result = sync_duckdb_from_csv([wihh_csv], db_path)
+    rksi_observations = read_station_observations_from_duckdb(
+        db_path,
+        "RKSI",
+        ["station", "valid", "tmpf"],
+    )
+    wihh_observations = read_station_observations_from_duckdb(
+        db_path,
+        "WIHH",
+        ["station", "valid", "tmpf"],
+    )
+
+    assert result["rows"] == 2
+    assert result["stations"] == ["RKSI", "WIHH"]
+    assert len(rksi_observations) == 1
+    assert len(wihh_observations) == 1
+
+
 def test_upsert_observation_rows_skips_existing_key(tmp_path: Path) -> None:
     db_path = tmp_path / "observations.duckdb"
     row = {"station": "RKSI", "valid": "2026-06-18 00:00", "tmpf": "75.20"}

@@ -11,6 +11,8 @@ raw_csv_files:
   - asos.csv
   - RJTT.csv
   - WSSS.csv
+openmeteo_history_csv: openmeteo-rksi.csv
+openmeteo_live_csv_pattern: openmeteo-rksi-{date}.csv
 
 heat_risk_cutoffs:
   - "09:00"

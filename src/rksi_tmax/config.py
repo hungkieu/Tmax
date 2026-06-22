@@ -17,6 +17,8 @@ class ProjectConfig:
     input_db: Path = Path("artifacts/observations.duckdb")
     prefer_duckdb: bool = True
     raw_csv_files: tuple[Path, ...] = (Path("asos.csv"),)
+    openmeteo_history_csv: Path | None = None
+    openmeteo_live_csv_pattern: str | None = None
     heat_risk_cutoffs: tuple[str, ...] = (
         "06:00",
         "07:00",
@@ -72,8 +74,12 @@ def load_config(path: str | Path = "configs/default.yaml") -> ProjectConfig:
         "heat_risk_dataset_parquet",
         "heat_risk_model_path",
         "heat_risk_metrics_path",
+        "openmeteo_history_csv",
     }
-    values = {key: Path(value) if key in path_fields else value for key, value in raw.items()}
+    values = {
+        key: Path(value) if key in path_fields and value is not None else value
+        for key, value in raw.items()
+    }
     if "raw_csv_files" in values:
         values["raw_csv_files"] = tuple(Path(value) for value in values["raw_csv_files"])
     if "cutoff_local" in values:

@@ -1,0 +1,30 @@
+station: MMMX
+timezone: America/Mexico_City
+cutoff_local: 09:00
+complete_day_min_local: '23:00'
+target: tmax
+input_csv: MMMX.csv
+input_db: artifacts/observations.duckdb
+prefer_duckdb: true
+raw_csv_files:
+- MMMX.csv
+heat_risk_cutoffs:
+- 09:00
+- '10:00'
+- '11:00'
+- '12:00'
+- '13:00'
+heat_risk_thresholds_c:
+- 27.0
+- 28.0
+- 29.0
+- 30.0
+- 31.0
+- 32.0
+- 33.0
+heat_risk_dataset_parquet: artifacts/mmmx_heat_risk_dataset.parquet
+heat_risk_model_path: artifacts/mmmx_heat_risk_model.joblib
+heat_risk_metrics_path: artifacts/mmmx_heat_risk_metrics.json
+test_fraction: 0.2
+random_state: 42
+feature_missing_threshold: 0.85

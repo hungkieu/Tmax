@@ -110,6 +110,7 @@ Shortcut options:
 | `--plot` / `--no-plot` | Write a temperature-curve PNG. |
 | `--explain` / `--no-explain` | Print Vietnamese explanation after JSON. |
 | `--sync-duckdb` / `--no-sync-duckdb` | Rebuild DuckDB if missing/too short. |
+| `--bet-temp-c C` | Estimate win probability for betting that `C` is not today's final Tmax. |
 
 ## METAR Commands
 
@@ -155,7 +156,9 @@ Re-running import is safe. Existing `(station, valid)` rows are skipped.
 
 ### `rksi-sync-duckdb`
 
-Rebuild DuckDB from one or more raw CSV files.
+Sync one or more raw CSV files into DuckDB. Existing rows with the same
+`(station, valid)` keys are replaced from the CSV input, and rows for other
+stations are preserved.
 
 ```powershell
 uv run rksi-sync-duckdb
@@ -230,6 +233,7 @@ Predict remaining heat and final `Tmax` for one date/cutoff.
 uv run rksi-predict-heat-risk --config configs/default.yaml --date 2026-06-20 --cutoff-local 11:00
 uv run rksi-predict-heat-risk --config configs/default.yaml --date 2026-06-20 --cutoff-local 11:00 --plot --explain
 uv run rksi-predict-heat-risk --config configs/default.yaml --date 2026-06-20 --cutoff-local 11:00 --plot artifacts/rksi_2026-06-20_1100.png
+uv run rksi-predict-heat-risk --config configs/default.yaml --date 2026-06-20 --cutoff-local 11:00 --bet-temp-c 29
 ```
 
 Options:
@@ -240,6 +244,7 @@ Options:
 | `--date YYYY-MM-DD` | Required. Forecast date in station local time. |
 | `--cutoff-local HH:MM` | Required. Cutoff in station local time. |
 | `--dataset PATH` | Optional existing heat-risk parquet to search before live feature build. |
+| `--bet-temp-c C` | Estimate win probability for betting that `C` is not today's final Tmax. |
 | `--plot [PATH]` | Write chart. Omit path for default `artifacts/{station}_{date}_{cutoff}_temperature_curve.png`. |
 | `--explain` | Print Vietnamese explanation after JSON. |
 
@@ -272,7 +277,10 @@ Options:
 | `--reference-date YYYY-MM-DD` | UTC date for METAR date inference. |
 
 The report selects the latest configured heat-risk cutoff that is not later
-than each station's local current time.
+than each station's local current time. Each station summary includes the
+selected Tmax forecast, remaining-heat probabilities, warning reasons, weather
+context, and when configured, the raw Open-Meteo Tmax plus the M3 corrected
+Tmax.
 
 Send the generated report:
 
@@ -297,9 +305,9 @@ uv run rksi --no-fetch --date 2026-06-20 --cutoff-local 11:00
 ### All Built-In Stations Manually
 
 ```powershell
-$DATE = "2026-06-20"
+$DATE = "2026-06-21"
 
-uv run rksi-fetch-metar --stations RKSI,RKPK,RJTT,WSSS --hours 48 --output metar.txt
+uv run rksi-fetch-metar --stations RKSI --hours 4 --output metar-rksi.txt
 uv run rksi-import-metar --metar-file metar.txt --reference-date $DATE
 
 uv run rksi-predict-heat-risk --config configs/default.yaml --date $DATE --cutoff-local 11:00 --plot --explain

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from rksi_tmax.config import ProjectConfig
 from rksi_tmax.heat_risk import (
@@ -9,12 +10,16 @@ from rksi_tmax.heat_risk import (
     _false_plateau_rule,
     format_heat_risk_explanation,
     _make_single_cutoff_dataset,
+    _not_highest_bet_output,
     _prediction_interval,
+    _resolve_prediction_method,
     _regime_break_output,
     _threshold_probabilities,
     _threshold_probability,
+    _tail_risk_interval,
     _underprediction_probabilities,
     _update_recommendation,
+    _warming_strength_output,
 )
 
 
@@ -117,6 +122,101 @@ def test_underprediction_probabilities_are_monotonic() -> None:
 
     assert probabilities["1.5"][0] == 0.6
     assert probabilities["2.0"][0] == 0.6
+
+
+def test_warming_strength_output_derives_class_probabilities() -> None:
+    probabilities = {
+        "0.5": np.asarray([0.8]),
+        "2.0": np.asarray([0.6]),
+        "4.0": np.asarray([0.2]),
+    }
+
+    output = _warming_strength_output(probabilities)
+
+    assert output["warming_strength"] == "strong_warming"
+    assert np.isclose(output["prob_no_or_weak_warming"], 0.2)
+    assert np.isclose(output["prob_mild_warming"], 0.2)
+    assert np.isclose(output["prob_strong_warming"], 0.4)
+    assert np.isclose(output["prob_extreme_warming"], 0.2)
+
+
+def test_tail_risk_interval_uses_late_warming_thresholds() -> None:
+    interval = {"prediction_interval_80_high_c": 25.4}
+    probabilities = {
+        "2.0": np.asarray([0.70]),
+        "3.0": np.asarray([0.35]),
+        "4.0": np.asarray([0.20]),
+    }
+
+    output = _tail_risk_interval(interval, observed_max_c=22.0, late_warming_probabilities=probabilities)
+
+    assert output["tail_risk_upper_c"] == 26.0
+    assert output["tail_risk_interval_80_high_c"] == 26.0
+    assert "prob_remaining_heat_ge_4_0" in output["tail_risk_reasons"]
+
+
+def test_not_highest_bet_is_won_when_observed_max_already_exceeds_bet() -> None:
+    output = _not_highest_bet_output(
+        24.0,
+        observed_max_c=25.0,
+        tmax_threshold_probabilities={},
+        remaining_heat_probabilities={},
+    )
+
+    assert output["win_probability"] == 1.0
+    assert output["lose_probability"] == 0.0
+    assert output["probability_basis"] == "observed_max_already_above_bet"
+
+
+def test_not_highest_bet_interpolates_tmax_threshold_probability() -> None:
+    output = _not_highest_bet_output(
+        29.0,
+        observed_max_c=27.0,
+        tmax_threshold_probabilities={
+            "28.0": np.asarray([0.8]),
+            "30.0": np.asarray([0.2]),
+        },
+        remaining_heat_probabilities={"2.0": np.asarray([0.4])},
+    )
+
+    assert np.isclose(output["win_probability"], 0.5)
+    assert output["probability_basis"] == "final_tmax_threshold_classifier_interpolated"
+
+
+def test_not_highest_bet_uses_remaining_heat_when_tmax_threshold_is_out_of_range() -> None:
+    output = _not_highest_bet_output(
+        23.0,
+        observed_max_c=22.0,
+        tmax_threshold_probabilities={
+            "28.0": np.asarray([0.8]),
+            "30.0": np.asarray([0.2]),
+        },
+        remaining_heat_probabilities={
+            "0.5": np.asarray([0.7]),
+            "2.0": np.asarray([0.3]),
+        },
+    )
+
+    assert np.isclose(output["win_probability"], 0.5666666666666667)
+    assert output["probability_basis"] == "remaining_heat_classifier_interpolated"
+
+
+def test_resolve_prediction_method_allows_supported_m3_alias() -> None:
+    bundle = {
+        "metrics": {"selected_prediction_method": "m1"},
+        "openmeteo_regressor": object(),
+        "openmeteo_feature_columns": ["openmeteo_tmax_c"],
+    }
+
+    assert _resolve_prediction_method(bundle, "m3") == "openmeteo"
+    assert _resolve_prediction_method(bundle, "auto") == "m1"
+
+
+def test_resolve_prediction_method_rejects_unsupported_m3() -> None:
+    bundle = {"metrics": {"selected_prediction_method": "m1"}}
+
+    with pytest.raises(ValueError, match="M3/Open-Meteo"):
+        _resolve_prediction_method(bundle, "m3")
 
 
 def test_false_plateau_rule_detects_suppressed_heating() -> None:

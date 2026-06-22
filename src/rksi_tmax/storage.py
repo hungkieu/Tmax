@@ -61,7 +61,7 @@ def sync_duckdb_from_csv(
     with duckdb.connect(str(database)) as connection:
         connection.execute(
             f"""
-            CREATE OR REPLACE TABLE {table}_raw AS
+            CREATE OR REPLACE TEMP TABLE {table}_raw AS
             SELECT * FROM read_csv(
                 ?,
                 header = true,
@@ -76,7 +76,7 @@ def sync_duckdb_from_csv(
         _ensure_columns(connection, f"{table}_raw")
         connection.execute(
             f"""
-            CREATE OR REPLACE TABLE {table} AS
+            CREATE OR REPLACE TEMP TABLE {table}_incoming AS
             SELECT {", ".join(_quote(column) for column in ASOS_COLUMNS)}
             FROM (
                 SELECT
@@ -92,6 +92,26 @@ def sync_duckdb_from_csv(
             ORDER BY station, valid
             """
         )
+        _create_table_if_missing(connection, table)
+        connection.execute(
+            f"""
+            DELETE FROM {table} existing
+            WHERE EXISTS (
+                SELECT 1
+                FROM {table}_incoming incoming
+                WHERE existing.station = incoming.station
+                  AND existing.valid = incoming.valid
+            )
+            """
+        )
+        connection.execute(
+            f"""
+            INSERT INTO {table}
+            SELECT {", ".join(_quote(column) for column in ASOS_COLUMNS)}
+            FROM {table}_incoming
+            """
+        )
+        connection.execute(f"DROP TABLE {table}_incoming")
         connection.execute(f"DROP TABLE {table}_raw")
         row_count = connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
         stations = [

@@ -125,6 +125,17 @@ def predict_heat_risk_main() -> None:
     parser.add_argument("--cutoff-local", required=True, help="Local cutoff HH:MM, for example 10:00.")
     parser.add_argument("--dataset")
     parser.add_argument(
+        "--bet-temp-c",
+        type=float,
+        help="Estimate win probability for betting this Celsius value is not today's final Tmax.",
+    )
+    parser.add_argument(
+        "--prediction-method",
+        choices=["auto", "direct", "two_stage", "m1", "m3", "openmeteo"],
+        default="auto",
+        help="Override forecast method. M3/Open-Meteo only works for supported model bundles.",
+    )
+    parser.add_argument(
         "--plot",
         nargs="?",
         const="",
@@ -143,6 +154,8 @@ def predict_heat_risk_main() -> None:
         args.date,
         args.cutoff_local,
         dataset_path=args.dataset,
+        bet_temp_c=args.bet_temp_c,
+        prediction_method_override=args.prediction_method,
     )
     if args.plot is not None:
         plot_path = args.plot or _default_prediction_plot_path(config.station, args.date, args.cutoff_local)
@@ -189,6 +202,17 @@ def station_shortcut_main(config_path: str) -> None:
     parser.add_argument("--plot", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--explain", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--sync-duckdb", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--bet-temp-c",
+        type=float,
+        help="Estimate win probability for betting this Celsius value is not today's final Tmax.",
+    )
+    parser.add_argument(
+        "--prediction-method",
+        choices=["auto", "direct", "two_stage", "m1", "m3", "openmeteo"],
+        default="auto",
+        help="Override forecast method. M3/Open-Meteo only works for supported model bundles.",
+    )
     args = parser.parse_args()
 
     now_local = datetime.now(ZoneInfo(config.timezone))
@@ -220,7 +244,14 @@ def station_shortcut_main(config_path: str) -> None:
         sync_result = sync_duckdb_from_csv(ingest_config.raw_csv_files, ingest_config.input_db)
         print(json.dumps({"sync_duckdb": sync_result}, indent=2, ensure_ascii=False))
 
-    result = predict_heat_risk(config, local_date, cutoff_local, dataset_path=None)
+    result = predict_heat_risk(
+        config,
+        local_date,
+        cutoff_local,
+        dataset_path=None,
+        bet_temp_c=args.bet_temp_c,
+        prediction_method_override=args.prediction_method,
+    )
     if args.plot:
         plot_path = _default_prediction_plot_path(config.station, local_date, cutoff_local)
         result["plot_path"] = str(plot_prediction_curve(config, result, plot_path))

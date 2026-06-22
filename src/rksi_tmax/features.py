@@ -8,6 +8,7 @@ import pandas as pd
 import polars as pl
 
 from rksi_tmax.config import ProjectConfig
+from rksi_tmax.openmeteo import load_openmeteo_features_for_dates
 from rksi_tmax.storage import read_station_observations_from_duckdb
 
 
@@ -178,6 +179,7 @@ def make_daily_dataset(observations: pd.DataFrame, config: ProjectConfig) -> pd.
     dataset = _add_calendar_features(dataset)
     dataset = _add_lag_features(dataset)
     dataset = _add_remaining_heat_climatology(dataset)
+    dataset = _add_openmeteo_features(dataset, config)
     dataset = _add_last3_regime_features(dataset)
     dataset = dataset.dropna(subset=["tmax_prev1_c", "remaining_heat_climo_global_c"]).reset_index(
         drop=True
@@ -522,6 +524,31 @@ def _add_remaining_heat_climatology(dataset: pd.DataFrame) -> pd.DataFrame:
         "month_remaining_heat_p90_by_cutoff"
     ].fillna(frame["remaining_heat_climo_global_c"])
     return frame.drop(columns=["remaining_heat_c"])
+
+
+def _add_openmeteo_features(dataset: pd.DataFrame, config: ProjectConfig) -> pd.DataFrame:
+    forecast = load_openmeteo_features_for_dates(
+        config.openmeteo_history_csv,
+        config.openmeteo_live_csv_pattern,
+        dataset["local_date"],
+    )
+    if forecast is None:
+        return dataset
+
+    frame = dataset.merge(forecast, on="local_date", how="left")
+    frame["openmeteo_expected_remaining_heat_c"] = (
+        frame["openmeteo_tmax_c"] - frame["tmpc_max_to_cutoff"]
+    ).clip(lower=0.0)
+    frame["openmeteo_tmax_minus_observed_max_c"] = (
+        frame["openmeteo_tmax_c"] - frame["tmpc_max_to_cutoff"]
+    )
+    frame["openmeteo_tmax_minus_last_temp_c"] = (
+        frame["openmeteo_tmax_c"] - frame["tmpc_last_to_cutoff"]
+    )
+    frame["openmeteo_tmax_minus_climo_c"] = (
+        frame["openmeteo_tmax_c"] - frame["tmax_climo_month_c"]
+    )
+    return frame
 
 
 def _add_last3_regime_features(dataset: pd.DataFrame) -> pd.DataFrame:

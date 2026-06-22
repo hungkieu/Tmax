@@ -48,6 +48,11 @@ NON_FEATURE_COLUMNS = {
 UPDATE_MIN_IMPROVEMENT_C = 0.15
 UPDATE_MIN_INTERVAL_WIDTH_C = 1.5
 REMAINING_HEAT_THRESHOLDS_C = (0.5, 1.0, 2.0, 3.0, 4.0)
+LATE_WARMING_WARNING_THRESHOLDS = {
+    "2.0": 0.50,
+    "3.0": 0.30,
+    "4.0": 0.15,
+}
 UNDERPREDICTION_THRESHOLDS_C = (1.5, 2.0)
 CONTINUING_HEAT_THRESHOLD_C = 0.5
 SENSITIVE_PROBABILITY_RANGE = (0.20, 0.70)
@@ -85,6 +90,7 @@ M1_FEATURE_PREFIXES = (
     "today_vs_last3_",
     "regime_break_",
     "tmax_lag_",
+    "openmeteo_",
 )
 
 
@@ -202,12 +208,40 @@ def m0_heat_risk_feature_columns(
     return [
         column
         for column in heat_risk_feature_columns(dataset, missing_threshold)
-        if not _is_m1_feature(column)
+        if not _is_m1_feature(column) and not _is_openmeteo_feature(column)
     ]
+
+
+def m1_heat_risk_feature_columns(
+    dataset: pd.DataFrame,
+    missing_threshold: float = 1.0,
+) -> list[str]:
+    return [
+        column
+        for column in heat_risk_feature_columns(dataset, missing_threshold)
+        if not _is_openmeteo_feature(column)
+    ]
+
+
+def openmeteo_heat_risk_feature_columns(
+    dataset: pd.DataFrame,
+    base_columns: list[str],
+    missing_threshold: float = 1.0,
+) -> list[str]:
+    openmeteo_columns = [
+        column
+        for column in heat_risk_feature_columns(dataset, missing_threshold)
+        if column.startswith("openmeteo_")
+    ]
+    return list(dict.fromkeys([*base_columns, *openmeteo_columns]))
 
 
 def _is_m1_feature(column: str) -> bool:
     return any(column.startswith(prefix) for prefix in M1_FEATURE_PREFIXES)
+
+
+def _is_openmeteo_feature(column: str) -> bool:
+    return column.startswith("openmeteo_")
 
 
 def train_heat_risk_model(config: ProjectConfig) -> dict:
@@ -227,8 +261,13 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
     test = dataset[dataset["local_date"].isin(test_dates)].copy()
 
     columns = m0_heat_risk_feature_columns(train, missing_threshold=config.feature_missing_threshold)
-    extended_columns = heat_risk_feature_columns(
+    extended_columns = m1_heat_risk_feature_columns(
         train,
+        missing_threshold=config.feature_missing_threshold,
+    )
+    openmeteo_columns = openmeteo_heat_risk_feature_columns(
+        train,
+        extended_columns,
         missing_threshold=config.feature_missing_threshold,
     )
     regressor = _regression_pipeline(config)
@@ -236,6 +275,12 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
 
     m1_regressor = _regression_pipeline(config)
     m1_regressor.fit(train[extended_columns], train[TARGET_COLUMN])
+
+    openmeteo_regressor = None
+    has_openmeteo_features = any(column.startswith("openmeteo_") for column in openmeteo_columns)
+    if has_openmeteo_features:
+        openmeteo_regressor = _regression_pipeline(config)
+        openmeteo_regressor.fit(train[openmeteo_columns], train[TARGET_COLUMN])
 
     continuation_classifiers = {}
     for threshold in REMAINING_HEAT_THRESHOLDS_C:
@@ -336,12 +381,35 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
     )
     direct_mae = float(mean_absolute_error(test[TARGET_COLUMN], direct_remaining_prediction))
     two_stage_mae = float(mean_absolute_error(test[TARGET_COLUMN], two_stage_remaining_prediction))
-    selected_prediction_method = "two_stage" if two_stage_mae <= direct_mae else "direct"
-    remaining_prediction = (
-        two_stage_remaining_prediction
-        if selected_prediction_method == "two_stage"
-        else direct_remaining_prediction
+    m0_remaining_prediction = (
+        two_stage_remaining_prediction if two_stage_mae <= direct_mae else direct_remaining_prediction
     )
+    openmeteo_remaining_prediction = None
+    openmeteo_mae = None
+    if openmeteo_regressor is not None:
+        openmeteo_remaining_prediction = _clip_remaining(
+            openmeteo_regressor.predict(test[openmeteo_columns])
+        )
+        openmeteo_mae = float(
+            mean_absolute_error(test[TARGET_COLUMN], openmeteo_remaining_prediction)
+        )
+    m1_mae = float(mean_absolute_error(test[TARGET_COLUMN], m1_remaining_prediction))
+    method_mae = {
+        "direct": direct_mae,
+        "two_stage": two_stage_mae,
+        "m1": m1_mae,
+    }
+    if openmeteo_mae is not None:
+        method_mae["openmeteo"] = openmeteo_mae
+    selected_prediction_method = min(method_mae, key=method_mae.get)
+    if selected_prediction_method == "two_stage":
+        remaining_prediction = two_stage_remaining_prediction
+    elif selected_prediction_method == "m1":
+        remaining_prediction = m1_remaining_prediction
+    elif selected_prediction_method == "openmeteo" and openmeteo_remaining_prediction is not None:
+        remaining_prediction = openmeteo_remaining_prediction
+    else:
+        remaining_prediction = direct_remaining_prediction
     train_direct_remaining_prediction = _clip_remaining(regressor.predict(train[columns]))
     train_continuation_probabilities = _remaining_heat_probabilities(
         continuation_classifiers,
@@ -359,9 +427,21 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
         if selected_prediction_method == "two_stage"
         else train_direct_remaining_prediction
     )
+    if selected_prediction_method == "m1":
+        train_remaining_prediction = _clip_remaining(m1_regressor.predict(train[extended_columns]))
+    if selected_prediction_method == "openmeteo" and openmeteo_regressor is not None:
+        train_remaining_prediction = _clip_remaining(
+            openmeteo_regressor.predict(train[openmeteo_columns])
+        )
     tmax_prediction = test["tmpc_max_to_cutoff"].to_numpy() + remaining_prediction
+    m0_tmax_prediction = test["tmpc_max_to_cutoff"].to_numpy() + m0_remaining_prediction
     train_tmax_prediction = train["tmpc_max_to_cutoff"].to_numpy() + train_remaining_prediction
     m1_tmax_prediction = test["tmpc_max_to_cutoff"].to_numpy() + m1_remaining_prediction
+    openmeteo_tmax_prediction = (
+        test["tmpc_max_to_cutoff"].to_numpy() + openmeteo_remaining_prediction
+        if openmeteo_remaining_prediction is not None
+        else None
+    )
     underprediction_classifiers = _fit_underprediction_classifiers(
         config,
         train,
@@ -404,13 +484,20 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
         "remaining_heat_mae_c": float(mean_absolute_error(test[TARGET_COLUMN], remaining_prediction)),
         "direct_remaining_heat_mae_c": direct_mae,
         "two_stage_remaining_heat_mae_c": two_stage_mae,
+        "m1_remaining_heat_mae_c": m1_mae,
+        "openmeteo_remaining_heat_mae_c": openmeteo_mae,
         "selected_prediction_method": selected_prediction_method,
         "tmax_mae_c": float(mean_absolute_error(test[FINAL_TMAX_COLUMN], tmax_prediction)),
         "tmax_rmse_c": _rmse(test[FINAL_TMAX_COLUMN], tmax_prediction),
         "tmax_bias_c": float(np.mean(tmax_prediction - test[FINAL_TMAX_COLUMN].to_numpy())),
-        "m0_heat_risk_tmax_mae_c": float(mean_absolute_error(test[FINAL_TMAX_COLUMN], tmax_prediction)),
+        "m0_heat_risk_tmax_mae_c": float(mean_absolute_error(test[FINAL_TMAX_COLUMN], m0_tmax_prediction)),
         "m1_phase_feature_tmax_mae_c": float(
             mean_absolute_error(test[FINAL_TMAX_COLUMN], m1_tmax_prediction)
+        ),
+        "openmeteo_tmax_mae_c": (
+            float(mean_absolute_error(test[FINAL_TMAX_COLUMN], openmeteo_tmax_prediction))
+            if openmeteo_tmax_prediction is not None
+            else None
         ),
         "curve_predicted_tmax_mae_c": curve_metrics.get("curve_predicted_tmax_mae_c"),
         "observed_max_baseline_mae_c": float(
@@ -426,6 +513,7 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
         "interval_calibration": interval_calibration,
         "feature_count": len(columns),
         "extended_feature_count": len(extended_columns),
+        "openmeteo_feature_count": len(openmeteo_columns) if has_openmeteo_features else 0,
         "feature_missing_threshold": config.feature_missing_threshold,
         "trained_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -435,6 +523,7 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
         {
             "regressor": regressor,
             "m1_regressor": m1_regressor,
+            "openmeteo_regressor": openmeteo_regressor,
             "conditional_regressor": conditional_regressor,
             "classifiers": classifiers,
             "continuation_classifiers": continuation_classifiers,
@@ -444,6 +533,7 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
             "curve_models": curve_models,
             "feature_columns": columns,
             "extended_feature_columns": extended_columns,
+            "openmeteo_feature_columns": openmeteo_columns if has_openmeteo_features else [],
             "metrics": metrics,
             "config": config,
             "update_policy": update_policy,
@@ -464,6 +554,7 @@ def validate_heat_risk_model(config: ProjectConfig) -> dict:
     metrics = bundle["metrics"]
     columns = bundle["feature_columns"]
     extended_columns = bundle.get("extended_feature_columns", columns)
+    openmeteo_columns = bundle.get("openmeteo_feature_columns", [])
 
     dates = pd.Series(sorted(dataset["local_date"].unique()))
     test_dates = set(
@@ -473,17 +564,48 @@ def validate_heat_risk_model(config: ProjectConfig) -> dict:
     )
     test = dataset[dataset["local_date"].isin(test_dates)].copy()
 
-    remaining_prediction = _predict_remaining_heat(bundle, test[columns])
+    direct_remaining_prediction = _clip_remaining(bundle["regressor"].predict(test[columns]))
+    continuation_probabilities = _remaining_heat_probabilities(
+        bundle.get("continuation_classifiers", {}),
+        test[columns],
+    )
+    conditional_remaining_prediction = _clip_remaining(
+        bundle.get("conditional_regressor", bundle["regressor"]).predict(test[columns])
+    )
+    two_stage_remaining_prediction = _two_stage_remaining_prediction(
+        continuation_probabilities,
+        conditional_remaining_prediction,
+    )
+    m0_remaining_prediction = (
+        two_stage_remaining_prediction
+        if mean_absolute_error(test[TARGET_COLUMN], two_stage_remaining_prediction)
+        <= mean_absolute_error(test[TARGET_COLUMN], direct_remaining_prediction)
+        else direct_remaining_prediction
+    )
+    remaining_prediction = _predict_remaining_heat(bundle, test)
     m1_remaining_prediction = _clip_remaining(
         bundle.get("m1_regressor", bundle["regressor"]).predict(test[extended_columns])
     )
+    openmeteo_remaining_prediction = (
+        _clip_remaining(bundle["openmeteo_regressor"].predict(test[openmeteo_columns]))
+        if bundle.get("openmeteo_regressor") is not None and openmeteo_columns
+        else None
+    )
     tmax_prediction = test["tmpc_max_to_cutoff"].to_numpy() + remaining_prediction
+    m0_tmax_prediction = test["tmpc_max_to_cutoff"].to_numpy() + m0_remaining_prediction
     m1_tmax_prediction = test["tmpc_max_to_cutoff"].to_numpy() + m1_remaining_prediction
+    openmeteo_tmax_prediction = (
+        test["tmpc_max_to_cutoff"].to_numpy() + openmeteo_remaining_prediction
+        if openmeteo_remaining_prediction is not None
+        else np.full(len(test), np.nan)
+    )
     curve_predictions = _curve_predictions(bundle.get("curve_models", {}), test[extended_columns])
     curve_tmax_prediction = _curve_tmax_prediction(test["tmpc_max_to_cutoff"], curve_predictions)
     test["predicted_remaining_heat_c"] = remaining_prediction
     test["predicted_tmax_c"] = tmax_prediction
+    test["m0_predicted_tmax_c"] = m0_tmax_prediction
     test["m1_predicted_tmax_c"] = m1_tmax_prediction
+    test["openmeteo_predicted_tmax_c"] = openmeteo_tmax_prediction
     test["curve_predicted_tmax_c"] = curve_tmax_prediction
     test["error_c"] = test["predicted_tmax_c"] - test[FINAL_TMAX_COLUMN]
     test["abs_error_c"] = test["error_c"].abs()
@@ -495,11 +617,16 @@ def validate_heat_risk_model(config: ProjectConfig) -> dict:
             "test_start": metrics["test_start"],
             "test_end": metrics["test_end"],
             "n_test": int(len(test)),
+            "prediction_method": metrics.get("selected_prediction_method", "direct"),
             "tmax_mae_c": float(mean_absolute_error(test[FINAL_TMAX_COLUMN], tmax_prediction)),
             "tmax_rmse_c": _rmse(test[FINAL_TMAX_COLUMN], tmax_prediction),
             "remaining_heat_mae_c": float(
                 mean_absolute_error(test[TARGET_COLUMN], remaining_prediction)
             ),
+            "m1_phase_feature_tmax_mae_c": metrics.get("m1_phase_feature_tmax_mae_c"),
+            "m0_heat_risk_tmax_mae_c": metrics.get("m0_heat_risk_tmax_mae_c"),
+            "openmeteo_tmax_mae_c": metrics.get("openmeteo_tmax_mae_c"),
+            "openmeteo_feature_count": metrics.get("openmeteo_feature_count", 0),
             "observed_max_baseline_mae_c": float(
                 mean_absolute_error(test[FINAL_TMAX_COLUMN], test["tmpc_max_to_cutoff"])
             ),
@@ -548,11 +675,15 @@ def predict_heat_risk(
     local_date: str,
     cutoff_local: str,
     dataset_path: str | Path | None = None,
+    bet_temp_c: float | None = None,
+    prediction_method_override: str | None = None,
 ) -> dict:
     cutoff_local = _normalize_cutoff(cutoff_local)
     bundle = _load_model_bundle(config.heat_risk_model_path)
+    prediction_method = _resolve_prediction_method(bundle, prediction_method_override)
     columns = bundle["feature_columns"]
     extended_columns = bundle.get("extended_feature_columns", columns)
+    openmeteo_columns = bundle.get("openmeteo_feature_columns", [])
     row = _prediction_row(config, local_date, cutoff_local, dataset_path)
     missing = [column for column in columns if column not in row.columns]
     if missing:
@@ -560,8 +691,16 @@ def predict_heat_risk(
     extended_missing = [column for column in extended_columns if column not in row.columns]
     if extended_missing:
         raise ValueError(f"Prediction row is missing extended model features: {extended_missing}")
+    openmeteo_missing = [column for column in openmeteo_columns if column not in row.columns]
+    if openmeteo_missing:
+        raise ValueError(f"Prediction row is missing Open-Meteo model features: {openmeteo_missing}")
 
     direct_remaining_heat = float(_clip_remaining(bundle["regressor"].predict(row[columns]))[0])
+    openmeteo_remaining_heat = None
+    if bundle.get("openmeteo_regressor") is not None and openmeteo_columns:
+        openmeteo_remaining_heat = float(
+            _clip_remaining(bundle["openmeteo_regressor"].predict(row[openmeteo_columns]))[0]
+        )
     remaining_probabilities = _remaining_heat_probabilities(
         bundle.get("continuation_classifiers", {}),
         row[columns],
@@ -583,7 +722,7 @@ def predict_heat_risk(
             np.asarray([conditional_remaining_heat]),
         )[0]
     )
-    remaining_heat = float(_predict_remaining_heat(bundle, row[columns])[0])
+    remaining_heat = float(_predict_remaining_heat(bundle, row, prediction_method)[0])
     observed_max_c = float(row["tmpc_max_to_cutoff"].iloc[0])
     last_observation_minute = int(row["last_observation_minute"].iloc[0])
     cutoff_minutes = _hhmm_to_minutes(cutoff_local)
@@ -606,10 +745,25 @@ def predict_heat_risk(
         "observed_max_to_cutoff_c": observed_max_c,
         "last_temp_to_cutoff_c": float(row["tmpc_last_to_cutoff"].iloc[0]),
         "predicted_remaining_heat_c": remaining_heat,
-        "prediction_method": bundle["metrics"].get("selected_prediction_method", "direct"),
+        "prediction_method": prediction_method,
+        "selected_prediction_method": bundle["metrics"].get("selected_prediction_method", "direct"),
+        "prediction_method_overridden": prediction_method_override is not None,
         "direct_predicted_remaining_heat_c": direct_remaining_heat,
         "conditional_predicted_remaining_heat_if_continues_c": conditional_remaining_heat,
         "two_stage_predicted_remaining_heat_c": two_stage_remaining_heat,
+        "openmeteo_predicted_remaining_heat_c": openmeteo_remaining_heat,
+        "openmeteo_predicted_tmax_c": (
+            observed_max_c + openmeteo_remaining_heat
+            if openmeteo_remaining_heat is not None
+            else None
+        ),
+        "openmeteo_forecast_tmax_c": _optional_float(row.get("openmeteo_tmax_c", pd.Series([np.nan])).iloc[0]),
+        "openmeteo_expected_remaining_heat_c": _optional_float(
+            row.get("openmeteo_expected_remaining_heat_c", pd.Series([np.nan])).iloc[0]
+        ),
+        "openmeteo_features_available": bool(
+            pd.notna(row.get("openmeteo_tmax_c", pd.Series([np.nan])).iloc[0])
+        ),
         "predicted_tmax_c": predicted_tmax_c,
         "predicted_tmax_f": predicted_tmax_c * 9.0 / 5.0 + 32.0,
         **interval,
@@ -626,6 +780,7 @@ def predict_heat_risk(
         result[f"prob_m0_underpredict_ge_{_remaining_heat_slug(threshold)}"] = probability
     if "0.5" in late_warming_probabilities:
         result["prob_tmax_already_reached"] = float(1.0 - late_warming_probabilities["0.5"][0])
+    result.update(_warming_strength_output(late_warming_probabilities))
     result["late_warming_risk"] = _late_warming_risk_label(
         float(late_warming_probabilities.get("2.0", np.asarray([0.0]))[0])
     )
@@ -636,6 +791,7 @@ def predict_heat_risk(
             underprediction_probabilities,
         )
     )
+    result.update(_tail_risk_interval(interval, observed_max_c, late_warming_probabilities))
     result["weather_context"] = _weather_context(row.iloc[0])
     result.update(_phase_prediction(bundle.get("phase_classifier"), row[extended_columns]))
     future_curve = _future_curve_output(
@@ -669,6 +825,13 @@ def predict_heat_risk(
         threshold = float(threshold_text)
         probability = probability_values[0]
         result[f"prob_tmax_ge_{_threshold_slug(threshold)}"] = float(probability)
+    if bet_temp_c is not None:
+        result["not_highest_bet"] = _not_highest_bet_output(
+            bet_temp_c,
+            observed_max_c,
+            probabilities,
+            late_warming_probabilities,
+        )
 
     update = _update_recommendation(
         cutoff_local,
@@ -696,8 +859,12 @@ def format_heat_risk_explanation(prediction: dict) -> str:
     interval_low = prediction.get("prediction_interval_80_low_c")
     interval_high = prediction.get("prediction_interval_80_high_c")
     phase = prediction.get("thermal_phase", "unknown")
+    strength = prediction.get("warming_strength", "unknown")
     late_risk = prediction.get("late_warming_risk", "unknown")
     warning = prediction.get("late_warming_warning", "unknown")
+    tail_risk_upper = prediction.get("tail_risk_upper_c")
+    openmeteo_tmax = prediction.get("openmeteo_forecast_tmax_c")
+    openmeteo_model_tmax = prediction.get("openmeteo_predicted_tmax_c")
     update_next = prediction.get("next_update_local")
     update_recommended = prediction.get("recommend_update_next_cutoff")
     p_reached = prediction.get("prob_tmax_already_reached")
@@ -723,10 +890,22 @@ def format_heat_risk_explanation(prediction: dict) -> str:
         ),
         (
             "Trạng thái nhiệt hiện tại: "
-            f"{_translate_phase(phase)}. Mức rủi ro tăng muộn: {_translate_risk(late_risk)}."
+            f"{_translate_phase(phase)}. Mức tăng còn lại: {_translate_warming_strength(strength)}. "
+            f"Mức rủi ro tăng muộn: {_translate_risk(late_risk)}."
         ),
         f"Cảnh báo vận hành: {_translate_warning(warning)}.",
     ]
+    if tail_risk_upper is not None and interval_high is not None and float(tail_risk_upper) > float(interval_high):
+        lines.append(
+            "Upper tail-risk cho Tmax được mở rộng lên khoảng "
+            f"{_format_c(tail_risk_upper)} vì có tín hiệu còn tăng mạnh."
+        )
+    if prediction.get("openmeteo_features_available"):
+        lines.append(
+            "Open-Meteo dự báo Tmax khoảng "
+            f"{_format_c(openmeteo_tmax)}; model M3 sau khi hiệu chỉnh theo quan sát hiện tại cho "
+            f"{_format_c(openmeteo_model_tmax)}."
+        )
     weather_lines = _format_weather_context(prediction.get("weather_context"))
     if weather_lines:
         lines.append("Nhận xét thời tiết METAR:")
@@ -742,6 +921,17 @@ def format_heat_risk_explanation(prediction: dict) -> str:
         probabilities.append(f">=4C: {_format_percent(p_ge_4)}")
     if probabilities:
         lines.append("Xác suất còn tăng thêm sau cutoff: " + ", ".join(probabilities) + ".")
+
+    bet = prediction.get("not_highest_bet")
+    if isinstance(bet, dict):
+        bet_line = (
+            f"Nếu cược rằng {_format_c(bet.get('bet_temp_c'))} không phải Tmax hôm nay, "
+            f"xác suất thắng ước tính là {_format_percent(bet.get('win_probability'))}; "
+            f"thắng khi Tmax cuối ngày > {_format_c(bet.get('bet_temp_c'))}."
+        )
+        if bet.get("probability_is_upper_bound"):
+            bet_line += " Đây là upper-bound thô vì mức cược nằm ngoài ngưỡng classifier đã train."
+        lines.append(bet_line)
 
     reasons = prediction.get("warning_reasons") or []
     if reasons:
@@ -802,12 +992,24 @@ def _translate_risk(value: str) -> str:
     return translations.get(value, value)
 
 
+def _translate_warming_strength(value: str) -> str:
+    translations = {
+        "no_or_weak_warming": "yếu hoặc gần như không tăng",
+        "mild_warming": "tăng nhẹ",
+        "strong_warming": "tăng mạnh",
+        "extreme_warming": "tăng rất mạnh",
+        "unknown": "không xác định",
+    }
+    return translations.get(value, value)
+
+
 def _translate_warning(value: str) -> str:
     translations = {
         "low": "thấp, chưa có tín hiệu cảnh báo đặc biệt",
         "watch_false_plateau": "cần theo dõi false plateau",
         "elevated_late_warming_risk": "có rủi ro tăng nhiệt muộn",
         "high_late_warming_risk": "rủi ro tăng nhiệt muộn cao",
+        "extreme_late_warming_possible": "có khả năng tăng nhiệt muộn rất mạnh",
         "high_extreme_late_warming_risk": "rủi ro tăng nhiệt muộn rất cao",
         "unknown": "không xác định",
     }
@@ -1177,6 +1379,94 @@ def _threshold_probabilities(
     return _monotonic_operational_threshold_probabilities(classifiers, features, observed_max_c)
 
 
+def _not_highest_bet_output(
+    bet_temp_c: float,
+    observed_max_c: float,
+    tmax_threshold_probabilities: dict[str, np.ndarray],
+    remaining_heat_probabilities: dict[str, np.ndarray],
+) -> dict:
+    bet_temp_c = float(bet_temp_c)
+    required_remaining_heat_c = bet_temp_c - observed_max_c
+    if observed_max_c > bet_temp_c:
+        win_probability = 1.0
+        basis = "observed_max_already_above_bet"
+        is_upper_bound = False
+    else:
+        threshold_probability = _interpolated_probability(
+            tmax_threshold_probabilities,
+            bet_temp_c,
+        )
+        if threshold_probability is not None:
+            win_probability = threshold_probability
+            basis = "final_tmax_threshold_classifier_interpolated"
+            is_upper_bound = False
+        else:
+            win_probability, basis, is_upper_bound = _remaining_heat_bet_probability(
+                required_remaining_heat_c,
+                remaining_heat_probabilities,
+            )
+    win_probability = float(np.clip(win_probability, 0.0, 1.0))
+    return {
+        "bet_temp_c": bet_temp_c,
+        "question": "x_c_will_not_be_today_highest_temperature",
+        "win_condition": "final_tmax_c > bet_temp_c",
+        "win_probability": win_probability,
+        "lose_probability": float(1.0 - win_probability),
+        "required_remaining_heat_c": float(max(0.0, required_remaining_heat_c)),
+        "observed_max_already_above_bet": bool(observed_max_c > bet_temp_c),
+        "probability_basis": basis,
+        "probability_is_upper_bound": bool(is_upper_bound),
+    }
+
+
+def _remaining_heat_bet_probability(
+    required_remaining_heat_c: float,
+    remaining_heat_probabilities: dict[str, np.ndarray],
+) -> tuple[float, str, bool]:
+    points = _probability_points(remaining_heat_probabilities)
+    if not points:
+        return 0.0, "remaining_heat_probability_unavailable", False
+    if required_remaining_heat_c <= points[0][0]:
+        return points[0][1], f"remaining_heat_classifier_ge_{_remaining_heat_slug(points[0][0])}", False
+    interpolated = _interpolated_probability(remaining_heat_probabilities, required_remaining_heat_c)
+    if interpolated is not None:
+        return interpolated, "remaining_heat_classifier_interpolated", False
+    return (
+        points[-1][1],
+        f"remaining_heat_classifier_ge_{_remaining_heat_slug(points[-1][0])}_upper_bound",
+        True,
+    )
+
+
+def _interpolated_probability(
+    probabilities: dict[str, np.ndarray],
+    threshold_c: float,
+) -> float | None:
+    points = _probability_points(probabilities)
+    if not points:
+        return None
+    if threshold_c < points[0][0] or threshold_c > points[-1][0]:
+        return None
+    for threshold, probability in points:
+        if np.isclose(threshold_c, threshold):
+            return probability
+    for (lower_threshold, lower_probability), (upper_threshold, upper_probability) in zip(
+        points,
+        points[1:],
+    ):
+        if lower_threshold <= threshold_c <= upper_threshold:
+            weight = (threshold_c - lower_threshold) / (upper_threshold - lower_threshold)
+            return float(lower_probability + weight * (upper_probability - lower_probability))
+    return None
+
+
+def _probability_points(probabilities: dict[str, np.ndarray]) -> list[tuple[float, float]]:
+    return [
+        (float(threshold_text), float(values[0]))
+        for threshold_text, values in sorted(probabilities.items(), key=lambda item: float(item[0]))
+    ]
+
+
 def _threshold_metrics(
     train_label: pd.Series,
     test_label: pd.Series,
@@ -1342,20 +1632,26 @@ def _late_warming_event_metrics(
         if probability is None:
             continue
         actual = (test[TARGET_COLUMN] >= float(threshold_text)).astype(int)
-        predicted = (probability >= 0.30).astype(int)
+        decision_threshold = LATE_WARMING_WARNING_THRESHOLDS[threshold_text]
+        predicted = (probability >= decision_threshold).astype(int)
         output[threshold_text] = {
+            "probability_threshold": decision_threshold,
+            "n": int(len(actual)),
             "event_rate": float(actual.mean()),
-            "recall_at_30pct": (
+            "brier": float(brier_score_loss(actual, probability)),
+            "recall": (
                 float(recall_score(actual, predicted, zero_division=0))
                 if actual.nunique() > 1
                 else None
             ),
-            "precision_at_30pct": (
+            "precision": (
                 float(precision_score(actual, predicted, zero_division=0))
                 if predicted.sum() > 0
                 else None
             ),
-            "false_alarm_rate_at_30pct": _false_alarm_rate(actual.to_numpy(), predicted),
+            "false_alarm_rate": _false_alarm_rate(actual.to_numpy(), predicted),
+            "false_alarm_count": int(((actual.to_numpy() == 0) & (predicted == 1)).sum()),
+            "miss_count": int(((actual.to_numpy() == 1) & (predicted == 0)).sum()),
         }
     return output
 
@@ -1437,16 +1733,49 @@ def _two_stage_remaining_prediction(
     return _clip_remaining(heat_continues_probability * conditional_remaining_prediction)
 
 
-def _predict_remaining_heat(bundle: dict, features: pd.DataFrame) -> np.ndarray:
-    method = bundle["metrics"].get("selected_prediction_method", "direct")
+def _predict_remaining_heat(
+    bundle: dict,
+    frame: pd.DataFrame,
+    method: str | None = None,
+) -> np.ndarray:
+    method = method or bundle["metrics"].get("selected_prediction_method", "direct")
+    columns = bundle["feature_columns"]
     if method == "two_stage" and "conditional_regressor" in bundle:
         probabilities = _remaining_heat_probabilities(
             bundle.get("continuation_classifiers", {}),
-            features,
+            frame[columns],
         )
-        conditional_prediction = _clip_remaining(bundle["conditional_regressor"].predict(features))
+        conditional_prediction = _clip_remaining(bundle["conditional_regressor"].predict(frame[columns]))
         return _two_stage_remaining_prediction(probabilities, conditional_prediction)
-    return _clip_remaining(bundle["regressor"].predict(features))
+    extended_columns = bundle.get("extended_feature_columns", columns)
+    if method == "m1" and bundle.get("m1_regressor") is not None:
+        return _clip_remaining(bundle["m1_regressor"].predict(frame[extended_columns]))
+    openmeteo_columns = bundle.get("openmeteo_feature_columns", [])
+    if method == "openmeteo" and bundle.get("openmeteo_regressor") is not None and openmeteo_columns:
+        return _clip_remaining(bundle["openmeteo_regressor"].predict(frame[openmeteo_columns]))
+    return _clip_remaining(bundle["regressor"].predict(frame[columns]))
+
+
+def _resolve_prediction_method(bundle: dict, override: str | None) -> str:
+    selected = bundle["metrics"].get("selected_prediction_method", "direct")
+    if override is None or override == "auto":
+        return selected
+    method = override.lower().replace("-", "_")
+    aliases = {
+        "m3": "openmeteo",
+        "open_meteo": "openmeteo",
+    }
+    method = aliases.get(method, method)
+    if method == "m1" and bundle.get("m1_regressor") is None:
+        raise ValueError("M1 is not available in this model bundle.")
+    if method == "openmeteo" and (
+        bundle.get("openmeteo_regressor") is None
+        or not bundle.get("openmeteo_feature_columns", [])
+    ):
+        raise ValueError("M3/Open-Meteo is not available for this location/model bundle.")
+    if method not in {"direct", "two_stage", "m1", "openmeteo"}:
+        raise ValueError(f"Unsupported prediction method: {override}")
+    return method
 
 
 def _build_interval_calibration(test: pd.DataFrame, residual: np.ndarray) -> dict:
@@ -1717,13 +2046,28 @@ def _interval_coverage(
 
 
 def _model_comparison(test: pd.DataFrame) -> dict:
+    m0_column = "m0_predicted_tmax_c" if "m0_predicted_tmax_c" in test else "predicted_tmax_c"
     output = {
         "m0_heat_risk": {
-            "tmax_mae_c": float(mean_absolute_error(test[FINAL_TMAX_COLUMN], test["predicted_tmax_c"])),
+            "tmax_mae_c": float(mean_absolute_error(test[FINAL_TMAX_COLUMN], test[m0_column])),
         },
         "m1_phase_features": {
             "tmax_mae_c": float(mean_absolute_error(test[FINAL_TMAX_COLUMN], test["m1_predicted_tmax_c"])),
         },
+    }
+    openmeteo_mask = test["openmeteo_predicted_tmax_c"].notna()
+    output["m3_openmeteo"] = {
+        "tmax_mae_c": (
+            float(
+                mean_absolute_error(
+                    test.loc[openmeteo_mask, FINAL_TMAX_COLUMN],
+                    test.loc[openmeteo_mask, "openmeteo_predicted_tmax_c"],
+                )
+            )
+            if openmeteo_mask.any()
+            else None
+        ),
+        "n": int(openmeteo_mask.sum()),
     }
     mask = test["curve_predicted_tmax_c"].notna()
     output["m2_future_curve"] = {
@@ -1795,6 +2139,64 @@ def _curve_prediction_tmax_value(observed_max_c: float, future_curve: dict) -> f
     return float(max([observed_max_c, *future_curve.values()]))
 
 
+def _warming_strength_output(late_warming_probabilities: dict[str, np.ndarray]) -> dict:
+    probability_ge_0_5c = _probability_value(late_warming_probabilities, "0.5")
+    probability_ge_2c = _probability_value(late_warming_probabilities, "2.0")
+    probability_ge_4c = _probability_value(late_warming_probabilities, "4.0")
+    class_probabilities = {
+        "no_or_weak_warming": 1.0 - probability_ge_0_5c,
+        "mild_warming": probability_ge_0_5c - probability_ge_2c,
+        "strong_warming": probability_ge_2c - probability_ge_4c,
+        "extreme_warming": probability_ge_4c,
+    }
+    class_probabilities = {
+        label: float(np.clip(probability, 0.0, 1.0))
+        for label, probability in class_probabilities.items()
+    }
+    total = sum(class_probabilities.values())
+    if total > 0:
+        class_probabilities = {
+            label: probability / total
+            for label, probability in class_probabilities.items()
+        }
+    strength = max(class_probabilities, key=class_probabilities.get)
+    return {
+        "warming_strength": strength,
+        "prob_no_or_weak_warming": class_probabilities["no_or_weak_warming"],
+        "prob_mild_warming": class_probabilities["mild_warming"],
+        "prob_strong_warming": class_probabilities["strong_warming"],
+        "prob_extreme_warming": class_probabilities["extreme_warming"],
+    }
+
+
+def _tail_risk_interval(
+    interval: dict,
+    observed_max_c: float,
+    late_warming_probabilities: dict[str, np.ndarray],
+) -> dict:
+    upper = float(interval["prediction_interval_80_high_c"])
+    reasons = []
+    for threshold_text, decision_probability in sorted(
+        LATE_WARMING_WARNING_THRESHOLDS.items(),
+        key=lambda item: float(item[0]),
+        reverse=True,
+    ):
+        probability = _probability_value(late_warming_probabilities, threshold_text)
+        if probability >= decision_probability:
+            threshold = float(threshold_text)
+            upper = max(upper, observed_max_c + threshold)
+            reasons.append(f"prob_remaining_heat_ge_{_remaining_heat_slug(threshold)}")
+    return {
+        "tail_risk_upper_c": upper,
+        "tail_risk_interval_80_high_c": upper,
+        "tail_risk_reasons": reasons,
+    }
+
+
+def _probability_value(probabilities: dict[str, np.ndarray], threshold_text: str) -> float:
+    return float(probabilities.get(threshold_text, np.asarray([0.0]))[0])
+
+
 def _late_warming_risk_label(probability_ge_2c: float) -> str:
     if probability_ge_2c < 0.10:
         return "low"
@@ -1821,13 +2223,13 @@ def _warning_output(
     )
     rule = _false_plateau_rule(row)
 
-    if probability_ge_4c >= 0.15:
-        warning = "high_extreme_late_warming_risk"
+    if probability_ge_4c >= LATE_WARMING_WARNING_THRESHOLDS["4.0"]:
+        warning = "extreme_late_warming_possible"
         warning_type = "classifier_remaining_heat_ge_4c"
-    elif probability_ge_3c >= 0.30:
+    elif probability_ge_3c >= LATE_WARMING_WARNING_THRESHOLDS["3.0"]:
         warning = "high_late_warming_risk"
         warning_type = "classifier_remaining_heat_ge_3c"
-    elif probability_ge_2c >= 0.50:
+    elif probability_ge_2c >= LATE_WARMING_WARNING_THRESHOLDS["2.0"]:
         warning = "elevated_late_warming_risk"
         warning_type = "classifier_remaining_heat_ge_2c"
     elif rule["suppressed_late_warming_warning"]:
@@ -1840,15 +2242,18 @@ def _warning_output(
     forecast_underprediction_warning = (
         probability_under_1_5c >= 0.30
         or probability_under_2c >= 0.20
-        or probability_ge_4c >= 0.15
-        or (rule["suppressed_late_warming_warning"] and probability_ge_2c >= 0.50)
+        or probability_ge_4c >= LATE_WARMING_WARNING_THRESHOLDS["4.0"]
+        or (
+            rule["suppressed_late_warming_warning"]
+            and probability_ge_2c >= LATE_WARMING_WARNING_THRESHOLDS["2.0"]
+        )
     )
     reasons = list(rule["warning_reasons"])
-    if probability_ge_2c >= 0.50:
+    if probability_ge_2c >= LATE_WARMING_WARNING_THRESHOLDS["2.0"]:
         reasons.append("classifier probability for remaining heat >= 2C is high")
-    if probability_ge_3c >= 0.30:
+    if probability_ge_3c >= LATE_WARMING_WARNING_THRESHOLDS["3.0"]:
         reasons.append("classifier probability for remaining heat >= 3C is high")
-    if probability_ge_4c >= 0.15:
+    if probability_ge_4c >= LATE_WARMING_WARNING_THRESHOLDS["4.0"]:
         reasons.append("classifier probability for remaining heat >= 4C is high")
     if forecast_underprediction_warning:
         reasons.append("point forecast may be too low")
@@ -2052,8 +2457,8 @@ def _plot_thermal_curve_diagnostics(test: pd.DataFrame, report: dict, output_pat
         late_rows.append(
             {
                 "threshold": f">={threshold}C",
-                "recall": values.get("recall_at_30pct") or 0.0,
-                "precision": values.get("precision_at_30pct") or 0.0,
+                "recall": values.get("recall", values.get("recall_at_30pct")) or 0.0,
+                "precision": values.get("precision", values.get("precision_at_30pct")) or 0.0,
             }
         )
     if late_rows:
@@ -2064,7 +2469,7 @@ def _plot_thermal_curve_diagnostics(test: pd.DataFrame, report: dict, output_pat
         ax_late.set_xticks(positions, late_frame["threshold"])
         ax_late.legend()
     ax_late.set_ylim(0, 1)
-    ax_late.set_title("Late Warming Detection at 30% Probability")
+    ax_late.set_title("Late Warming Warning Detection")
 
     ax_compare = fig.add_subplot(grid[1, 1])
     comparison = report.get("model_comparison", {})
@@ -2072,6 +2477,7 @@ def _plot_thermal_curve_diagnostics(test: pd.DataFrame, report: dict, output_pat
         {"model": "M0", "mae": comparison.get("m0_heat_risk", {}).get("tmax_mae_c")},
         {"model": "M1", "mae": comparison.get("m1_phase_features", {}).get("tmax_mae_c")},
         {"model": "M2 Curve", "mae": comparison.get("m2_future_curve", {}).get("tmax_mae_c")},
+        {"model": "M3 OM", "mae": comparison.get("m3_openmeteo", {}).get("tmax_mae_c")},
     ]
     compare_frame = pd.DataFrame(rows).dropna(subset=["mae"])
     if not compare_frame.empty:

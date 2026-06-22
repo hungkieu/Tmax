@@ -48,9 +48,9 @@ input_csv: RJTT.csv
 input_db: artifacts/observations.duckdb
 prefer_duckdb: true
 raw_csv_files:
-  - asos.csv
   - RJTT.csv
-  - WSSS.csv
+openmeteo_history_csv: openmeteo-rksi.csv
+openmeteo_live_csv_pattern: openmeteo-rksi-{date}.csv
 ```
 
 - `input_csv`: fallback CSV for this station. Also used by METAR import when
@@ -59,13 +59,45 @@ raw_csv_files:
 - `prefer_duckdb`: when `true`, commands read from DuckDB if the DB exists.
   If the DB is missing, code falls back to `input_csv`.
 - `raw_csv_files`: files loaded by `rksi-sync-duckdb` when `--csv` is not
-  passed.
+  passed. Sync updates rows from these CSV files and keeps existing rows for
+  other stations in the same DuckDB database.
+- `openmeteo_history_csv`: optional Open-Meteo daily forecast/history CSV.
+  When present, dataset build joins it by `local_date` and trains the M3
+  Open-Meteo enhanced regressor.
+- `openmeteo_live_csv_pattern`: optional live forecast file pattern. `{date}`
+  is replaced with the local forecast date, for example
+  `openmeteo-rksi-2026-06-21.csv`. Live rows override history rows for the
+  same date.
 
 If CSV and DuckDB disagree, resync:
 
 ```powershell
 uv run rksi-sync-duckdb --config configs/rjtt.yaml
 ```
+
+## Open-Meteo Forecast Features
+
+Open-Meteo is optional per station. When configured, dataset build joins the
+daily forecast by `local_date` and training adds an M3 Open-Meteo enhanced
+regressor. Validation compares M3 against the ASOS/METAR-only M0 model and
+selects the lower-MAE method for `predicted_tmax_c`.
+
+Historical forecast file:
+
+```yaml
+openmeteo_history_csv: openmeteo-rksi.csv
+```
+
+Live forecast files use `{date}` in the configured pattern:
+
+```yaml
+openmeteo_live_csv_pattern: openmeteo-rksi-{date}.csv
+```
+
+For example, prediction for `2026-06-21` will use
+`openmeteo-rksi-2026-06-21.csv` if it exists. The live row overrides the
+history row for that date. Prediction output and Telegram reports show both
+the raw Open-Meteo Tmax and the M3 corrected Tmax.
 
 ## Heat-Risk Training
 
@@ -197,13 +229,12 @@ Use an IANA timezone such as `Asia/Seoul`, `Asia/Tokyo`, or
 
 ### 3. Add The CSV To DuckDB Sync
 
-Add the new CSV to `raw_csv_files` so `rksi-sync-duckdb` loads it:
+Add the new CSV to `raw_csv_files` so `rksi-sync-duckdb` loads it. It can be
+only this station's CSV even when several station configs share the same
+`input_db`:
 
 ```yaml
 raw_csv_files:
-  - asos.csv
-  - RJTT.csv
-  - WSSS.csv
   - NEW_STATION.csv
 ```
 

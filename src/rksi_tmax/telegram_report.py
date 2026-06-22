@@ -166,6 +166,7 @@ def _select_configured_cutoff(config: ProjectConfig, local_now: datetime) -> str
 def _format_prediction_entry(prediction: dict) -> list[str]:
     interval_low = prediction.get("prediction_interval_80_low_c")
     interval_high = prediction.get("prediction_interval_80_high_c")
+    tail_risk_upper = prediction.get("tail_risk_upper_c")
     weather = prediction.get("weather_context", {})
     weather_summary = weather.get("summary") if isinstance(weather, dict) else None
     weather_lines = weather_summary[:3] if isinstance(weather_summary, list) else []
@@ -192,9 +193,34 @@ def _format_prediction_entry(prediction: dict) -> list[str]:
         remaining_heat_text,
         (
             f"Pha nhiệt: {_translate_phase(prediction.get('thermal_phase'))}; "
+            f"mức tăng còn lại: {_translate_warming_strength(prediction.get('warming_strength'))}; "
             f"rủi ro tăng muộn: {_translate_warning(prediction.get('late_warming_warning'))}"
         ),
     ]
+    if tail_risk_upper is not None and interval_high is not None and float(tail_risk_upper) > float(interval_high):
+        output.append(f"Upper tail-risk: {_format_c(tail_risk_upper)}")
+    if prediction.get("openmeteo_features_available"):
+        openmeteo_model = prediction.get("openmeteo_predicted_tmax_c")
+        selected = prediction.get("predicted_tmax_c")
+        delta = (
+            float(openmeteo_model) - float(selected)
+            if openmeteo_model is not None and selected is not None
+            else None
+        )
+        output.append(
+            "Open-Meteo: "
+            f"Tmax {_format_c(prediction.get('openmeteo_forecast_tmax_c'))}; "
+            f"M3 sau hiệu chỉnh {_format_c(openmeteo_model)}; "
+            f"chênh forecast chính {_format_signed_c(delta)}"
+        )
+    bet = prediction.get("not_highest_bet")
+    if isinstance(bet, dict):
+        output.append(
+            "Cược "
+            f"{_format_c(bet.get('bet_temp_c'))} không phải Tmax: "
+            f"thắng {_format_percent(bet.get('win_probability'))}, "
+            f"thua {_format_percent(bet.get('lose_probability'))}"
+        )
     if curve_text:
         output.append(f"Đường nhiệt tới: {curve_text}")
     if warning_text:
@@ -277,7 +303,17 @@ def _translate_warning(value: object) -> str:
         "low": "thấp",
         "watch_false_plateau": "cần theo dõi plateau giả",
         "high_late_warming_risk": "cao",
+        "extreme_late_warming_possible": "rất cao",
         "high_extreme_late_warming_risk": "rất cao",
+    }.get(str(value), str(value) if value is not None else "không rõ")
+
+
+def _translate_warming_strength(value: object) -> str:
+    return {
+        "no_or_weak_warming": "yếu/gần như không tăng",
+        "mild_warming": "tăng nhẹ",
+        "strong_warming": "tăng mạnh",
+        "extreme_warming": "tăng rất mạnh",
     }.get(str(value), str(value) if value is not None else "không rõ")
 
 
@@ -309,6 +345,15 @@ def _format_c(value: object) -> str:
         return "n/a"
     try:
         return f"{float(value):.1f}C"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _format_signed_c(value: object) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):+.1f}C"
     except (TypeError, ValueError):
         return str(value)
 
