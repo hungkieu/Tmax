@@ -9,6 +9,7 @@ from rksi_tmax.heat_risk import (
     _add_future_curve_targets,
     _false_plateau_rule,
     _integer_tmax_win_rates,
+    _possible_new_peak_output,
     format_heat_risk_explanation,
     _make_single_cutoff_dataset,
     _metrics_by_cutoff,
@@ -24,6 +25,37 @@ from rksi_tmax.heat_risk import (
     _update_recommendation,
     _warming_strength_output,
 )
+
+
+def test_possible_new_peak_flags_suppressed_dip() -> None:
+    out = _possible_new_peak_output(
+        {"false_plateau_score": 2.5, "prob_tmax_already_reached": 0.5},
+        conditional_tmax_c=32.1,
+        predicted_tmax_c=31.4,
+    )
+    assert out["possible_new_peak"] is True
+    assert out["planning_tmax_rounded_c"] == 32
+    assert "possible_new_peak_warning" in out
+
+
+def test_possible_new_peak_silent_when_not_suppressed() -> None:
+    out = _possible_new_peak_output(
+        {"false_plateau_score": 1.0, "prob_tmax_already_reached": 0.5},
+        conditional_tmax_c=32.1,
+        predicted_tmax_c=31.4,
+    )
+    assert out["possible_new_peak"] is False
+    assert out["planning_tmax_c"] == 31.4
+    assert "possible_new_peak_warning" not in out
+
+
+def test_possible_new_peak_silent_when_peak_already_passed() -> None:
+    out = _possible_new_peak_output(
+        {"false_plateau_score": 2.5, "prob_tmax_already_reached": 0.85},
+        conditional_tmax_c=33.0,
+        predicted_tmax_c=32.0,
+    )
+    assert out["possible_new_peak"] is False
 
 
 class DummyClassifier:

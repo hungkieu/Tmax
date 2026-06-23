@@ -61,6 +61,13 @@ LATE_WARMING_WARNING_THRESHOLDS = {
 UNDERPREDICTION_THRESHOLDS_C = (1.5, 2.0)
 CONTINUING_HEAT_THRESHOLD_C = 0.5
 SENSITIVE_PROBABILITY_RANGE = (0.20, 0.70)
+# "Possible new peak" (false-plateau) warning: on suppressed days where the
+# temperature has stalled/dipped before the late-peak window, the MAE-optimal point
+# forecast under-reads a minority of days that still warm up. We do not move the
+# point forecast (that would hurt average accuracy); instead we surface a planning
+# upper bound from the "if warming continues" conditional estimate.
+FALSE_PLATEAU_WARNING_SCORE = 2.0
+FALSE_PLATEAU_MAX_PROB_REACHED = 0.6
 FUTURE_CURVE_HORIZONS_MINUTES = (30, 60, 90, 120, 150, 180)
 FUTURE_CURVE_TARGET_TOLERANCE_MINUTES = 20
 THERMAL_PHASE_LABELS = (
@@ -996,11 +1003,57 @@ def predict_heat_risk(
         probabilities,
     )
     result.update(update)
+    result.update(
+        _possible_new_peak_output(
+            result,
+            observed_max_c + conditional_remaining_heat,
+            predicted_tmax_c,
+        )
+    )
 
     if pd.notna(row[FINAL_TMAX_COLUMN].iloc[0]):
         result["actual_tmax_c"] = float(row[FINAL_TMAX_COLUMN].iloc[0])
         result["actual_remaining_heat_c"] = float(row[TARGET_COLUMN].iloc[0])
     return result
+
+
+def _possible_new_peak_output(
+    result: dict,
+    conditional_tmax_c: float,
+    predicted_tmax_c: float,
+) -> dict:
+    """Flag suppressed 'false plateau' days that may still set a new peak.
+
+    Does NOT alter the point forecast. When the false-plateau score is high, the
+    peak is not yet clearly past, and the 'if warming continues' conditional rounds
+    to a strictly higher integer than the point forecast, we expose a higher
+    planning upper bound plus an operator warning.
+    """
+    false_plateau_score = float(result.get("false_plateau_score", 0.0) or 0.0)
+    prob_reached = float(result.get("prob_tmax_already_reached", 0.0) or 0.0)
+    conditional_rounded = _round_c_scalar(conditional_tmax_c)
+    point_rounded = _round_c_scalar(predicted_tmax_c)
+    possible = (
+        false_plateau_score >= FALSE_PLATEAU_WARNING_SCORE
+        and conditional_rounded > point_rounded
+        and prob_reached < FALSE_PLATEAU_MAX_PROB_REACHED
+    )
+    planning_tmax_c = max(predicted_tmax_c, conditional_tmax_c) if possible else predicted_tmax_c
+    output = {
+        "conditional_tmax_c": float(conditional_tmax_c),
+        "possible_new_peak": bool(possible),
+        "planning_tmax_c": float(planning_tmax_c),
+        "planning_tmax_rounded_c": _round_c_scalar(planning_tmax_c),
+    }
+    if possible:
+        output["possible_new_peak_warning"] = (
+            f"Dấu hiệu đỉnh giả (false plateau, score {false_plateau_score:.1f}): nhiệt vừa "
+            "chững/giảm trong điều kiện ức chế bức xạ nhưng chưa qua khung giờ đỉnh muộn. "
+            f"Nếu trời hửng, Tmax có thể lên ~{_format_c(conditional_tmax_c)} "
+            f"(điểm dự báo hiện {_format_c(predicted_tmax_c)}). "
+            f"Nên dùng mốc lập kế hoạch {output['planning_tmax_rounded_c']}°C."
+        )
+    return output
 
 
 def format_heat_risk_explanation(prediction: dict) -> str:
@@ -1055,6 +1108,8 @@ def format_heat_risk_explanation(prediction: dict) -> str:
             "Upper tail-risk cho Tmax được mở rộng lên khoảng "
             f"{_format_c(tail_risk_upper)} vì có tín hiệu còn tăng mạnh."
         )
+    if prediction.get("possible_new_peak"):
+        lines.append(prediction["possible_new_peak_warning"])
     if prediction.get("openmeteo_features_available"):
         lines.append(
             "Open-Meteo dự báo Tmax khoảng "
@@ -2141,6 +2196,10 @@ def _metrics_by_cutoff(test: pd.DataFrame) -> list[dict]:
             }
         )
     return sorted(output, key=lambda row: _hhmm_to_minutes(row["cutoff_local"]))
+
+
+def _round_c_scalar(value: float) -> int:
+    return int(np.floor(float(value) + 0.5))
 
 
 def _round_half_up_celsius(values: pd.Series | np.ndarray) -> pd.Series:
