@@ -17,7 +17,7 @@ predicted_tmax_c = selected method output
 ```
 
 For RKSI, the selected method is currently `openmeteo` because M3, trained from
-the M1 feature set plus Open-Meteo daily forecast features, has the lowest
+the M1 feature set plus Open-Meteo daily and hourly API forecast features, has the lowest
 validation MAE. M1 remains available as the METAR/ASOS-only feature-expanded
 fallback.
 
@@ -29,8 +29,8 @@ Training and validation:
 
 ```text
 Train period: 2016-01-02 to 2024-05-17
-Test period: 2024-05-18 to 2026-06-20
-Train rows: 15275
+Test period: 2024-05-19 to 2026-06-21
+Train rows: 15280
 Test rows: 3820
 Cutoffs: 09:00, 10:00, 11:00, 12:00, 13:00 local
 ```
@@ -40,9 +40,10 @@ Model layers:
 - `M0 heat-risk`: ASOS/METAR-only direct/two-stage remaining-heat model.
 - `M1 phase features`: expanded remaining-heat model using phase/plateau,
   climatology, and last-3-days regime features.
-- `M3 Open-Meteo`: M1 features plus daily Open-Meteo forecast features
-  including forecast Tmax, WMO weather code, precipitation/rain, max wind, and
-  gusts.
+- `M3 Open-Meteo`: M1 features plus daily and hourly Open-Meteo API forecast features
+  including forecast Tmax, hourly temperature shape, WMO weather code,
+  precipitation/rain, wind, gusts, cloud, visibility, and precipitation
+  probability.
 - `Thermal phase classifier`: predicts `pre_peak_ramp`, `peak_plateau`,
   `post_peak_decline`, or `uncertain_transition`.
 - `Late-warming classifiers`: estimate remaining heat `>= 0.5/1/2/3 C`.
@@ -53,20 +54,25 @@ Model layers:
 | Model / Metric | Value |
 |---|---:|
 | Selected operational method | openmeteo |
-| Selected Tmax MAE | 0.772 C |
-| Selected Tmax RMSE | 1.044 C |
-| Selected bias | +0.026 C |
-| M0 two-stage Tmax MAE | 0.857 C |
-| M1 phase-feature Tmax MAE | 0.819 C |
-| M3 Open-Meteo Tmax MAE | 0.772 C |
-| Curve-derived Tmax MAE | 0.948 C |
-| Observed-max baseline MAE | 1.986 C |
+| Selected Tmax MAE | 0.764 C |
+| Selected Tmax RMSE | 1.038 C |
+| Selected bias | +0.004 C |
+| M0 two-stage Tmax MAE | 0.851 C |
+| M1 phase-feature Tmax MAE | 0.818 C |
+| M3 Open-Meteo Tmax MAE | 0.764 C |
+| M3 daily-only Tmax MAE | 0.767 C |
+| M3 daily+hourly Tmax MAE | 0.764 C |
+| Curve-derived Tmax MAE | 0.945 C |
+| Observed-max baseline MAE | 1.987 C |
 
 Interpretation:
 
-- `M3 Open-Meteo` improves RKSI backtest MAE by about `0.085 C` versus the
-  ASOS/METAR-only M0 two-stage model and about `0.047 C` versus M1-only
+- `M3 Open-Meteo` improves RKSI backtest MAE by about `0.086 C` versus the
+  ASOS/METAR-only M0 two-stage model and about `0.053 C` versus M1-only
   features on this validation window.
+- The hourly Open-Meteo features improve M3 slightly versus daily-only
+  Open-Meteo: `0.764 C` vs `0.767 C` MAE. The gain is small, but it is
+  positive and the selected M3 variant is `hourly`.
 - Curve-derived Tmax is worse than `M0`, so curve output should be treated as
   explanatory/diagnostic, not the final Tmax forecast.
 
@@ -74,11 +80,11 @@ Interpretation:
 
 | Cutoff | N | Selected Tmax MAE (C) | Observed-max baseline MAE (C) | Bias (C) |
 |---|---:|---:|---:|---:|
-| 09:00 | 764 | 1.026 | 3.605 | +0.045 |
-| 10:00 | 764 | 0.908 | 2.740 | +0.049 |
-| 11:00 | 764 | 0.791 | 1.852 | +0.025 |
-| 12:00 | 764 | 0.656 | 1.116 | +0.032 |
-| 13:00 | 764 | 0.510 | 0.616 | +0.015 |
+| 09:00 | 764 | 1.039 | 3.607 | +0.020 |
+| 10:00 | 764 | 0.892 | 2.742 | +0.015 |
+| 11:00 | 764 | 0.775 | 1.853 | -0.020 |
+| 12:00 | 764 | 0.630 | 1.118 | -0.019 |
+| 13:00 | 764 | 0.486 | 0.616 | +0.022 |
 
 Interpretation:
 
@@ -92,7 +98,7 @@ Interpretation:
 Current RKSI validation:
 
 ```text
-Accuracy: 75.3%
+Accuracy: 74.5%
 ```
 
 Confusion matrix order:
@@ -102,10 +108,10 @@ pre_peak_ramp, peak_plateau, post_peak_decline, uncertain_transition
 ```
 
 ```text
-[[1546,  55,  67,   0],
- [ 185, 201,  72,  83],
- [ 124, 125, 614, 113],
- [   0,  28,  90, 512]]
+[[1534,  60,  72,   0],
+ [ 194, 198,  67,  81],
+ [ 140, 118, 600, 124],
+ [   0,  33,  84, 515]]
 ```
 
 Interpretation:
@@ -156,17 +162,17 @@ Horizon MAE:
 
 | Horizon | MAE (C) |
 |---|---:|
-| T+30m | 0.496 |
-| T+60m | 0.622 |
-| T+90m | 0.734 |
-| T+120m | 0.817 |
-| T+150m | 0.886 |
-| T+180m | 0.938 |
+| T+30m | 0.497 |
+| T+60m | 0.626 |
+| T+90m | 0.742 |
+| T+120m | 0.831 |
+| T+150m | 0.922 |
+| T+180m | 0.978 |
 
 Curve-derived Tmax:
 
 ```text
-MAE: 0.918 C
+MAE: 0.945 C
 ```
 
 Interpretation:
@@ -180,10 +186,10 @@ Interpretation:
 
 | Threshold | Event rate | Brier | Brier Skill Score | ROC AUC |
 |---|---:|---:|---:|---:|
-| Tmax >= 28 C | 20.7% | 0.024 | 0.857 | 0.995 |
-| Tmax >= 29 C | 18.0% | 0.027 | 0.821 | 0.994 |
-| Tmax >= 30 C | 14.8% | 0.025 | 0.808 | 0.995 |
-| Tmax >= 31 C | 10.4% | 0.024 | 0.751 | 0.993 |
+| Tmax >= 28 C | 20.9% | 0.025 | 0.853 | 0.995 |
+| Tmax >= 29 C | 18.1% | 0.026 | 0.830 | 0.994 |
+| Tmax >= 30 C | 14.9% | 0.025 | 0.814 | 0.995 |
+| Tmax >= 31 C | 10.5% | 0.022 | 0.768 | 0.993 |
 
 Interpretation:
 
@@ -208,30 +214,30 @@ Key output:
 | Data fresh enough | true |
 | Observed max to cutoff | 28.0 C |
 | Last temp to cutoff | 28.0 C |
-| Predicted remaining heat | +0.25 C |
+| Predicted remaining heat | +0.16 C |
 | Prediction method | openmeteo |
 | Open-Meteo raw Tmax | 23.1 C |
-| M3 corrected Tmax | 28.22 C |
-| Practical 80% interval | 28.0 to 29.47 C |
+| M3 corrected Tmax | 28.16 C |
+| Practical 80% interval | 28.0 to 29.45 C |
 | Thermal phase | post_peak_decline |
-| Probability post-peak decline | 77.1% |
-| Probability Tmax already reached | 68.2% |
+| Probability post-peak decline | 51.3% |
+| Probability Tmax already reached | 78.2% |
 | Late-warming risk | low |
-| P(remaining heat >= 2 C) | 1.1% |
-| P(remaining heat >= 3 C) | 0.15% |
-| P(Tmax >= 29 C) | 9.4% |
-| P(Tmax >= 30 C) | 0.09% |
+| P(remaining heat >= 2 C) | 1.9% |
+| P(remaining heat >= 3 C) | 0.23% |
+| P(Tmax >= 29 C) | 15.5% |
+| P(Tmax >= 30 C) | 0.05% |
 
 Future curve:
 
 | Local time | Predicted temp |
 |---|---:|
-| 13:00 | 27.90 C |
-| 13:30 | 27.95 C |
-| 14:00 | 27.70 C |
-| 14:30 | 27.07 C |
-| 15:00 | 27.02 C |
-| 15:30 | 26.49 C |
+| 13:00 | 28.01 C |
+| 13:30 | 27.98 C |
+| 14:00 | 27.78 C |
+| 14:30 | 27.41 C |
+| 15:00 | 27.25 C |
+| 15:30 | 27.16 C |
 
 Operational reading:
 
@@ -244,11 +250,11 @@ The future curve does not support a strong late-warming scenario.
 
 ## Multi-Station Snapshot
 
-Latest validation MAE. Open-Meteo is currently configured only for RKSI.
+Latest validation MAE. Open-Meteo can be configured per location with API coordinates.
 
 | Station | Selected / M0 MAE | M1 MAE | M3 Open-Meteo MAE | Curve Tmax MAE |
 |---|---:|---:|---:|---:|
-| RKSI | 0.772 C | 0.819 C | 0.772 C | 0.948 C |
+| RKSI | 0.764 C | 0.818 C | 0.764 C | 0.945 C |
 | RKPK | 0.957 C | 0.961 C | n/a | 1.608 C |
 | RJTT | 0.785 C | 0.762 C | n/a | 0.864 C |
 | WSSS | 0.609 C | 0.609 C | n/a | 0.903 C |
@@ -256,7 +262,7 @@ Latest validation MAE. Open-Meteo is currently configured only for RKSI.
 Interpretation:
 
 - M3 currently changes RKSI from ASOS/METAR-only M0/M1 to the selected
-  operational method.
+  operational method; the selected M3 variant is daily+hourly.
 - Open-Meteo remains useful as both raw external forecast and M3-corrected
   operational signal in reports.
 - Curve-derived Tmax is not yet good enough to become the operational forecast.
@@ -268,11 +274,11 @@ Interpretation:
 Primary files:
 
 ```text
-artifacts/heat_risk_diagnostics.png
-artifacts/heat_risk_thermal_curve_diagnostics.png
-artifacts/heat_risk_validation_report.json
-artifacts/heat_risk_top_errors.csv
-artifacts/heat_risk_top_error_days.csv
+artifacts/rksi/heat_risk_diagnostics.png
+artifacts/rksi/heat_risk_thermal_curve_diagnostics.png
+artifacts/rksi/heat_risk_validation_report.json
+artifacts/rksi/heat_risk_top_errors.csv
+artifacts/rksi/heat_risk_top_error_days.csv
 ```
 
 Expert review should focus on:
@@ -281,10 +287,57 @@ Expert review should focus on:
   large;
 - late-warming false alarms;
 - plateau vs post-peak confusion;
-- whether M3 Open-Meteo should be added for other stations after matching
-  forecast-history files are available;
+- whether M3 Open-Meteo should be added for other stations after coordinates
+  are entered and API cache is prepared;
 - days where raw Open-Meteo Tmax strongly disagrees with observed cutoff state;
 - whether curve model should be used only for near-term curve shape, not Tmax.
+
+## Daily Operation
+
+Daily prediction does not require rebuilding the full dataset or retraining the
+model. Normal daily flow for RKSI:
+
+1. Fetch/import recent METAR and sync DuckDB.
+2. Fetch Open-Meteo daily forecast cache for the forecast date.
+3. Run prediction at the selected local cutoff.
+4. Read `predicted_tmax_c`, `openmeteo_forecast_tmax_c`,
+   `openmeteo_predicted_tmax_c`, `thermal_phase`, `late_warming_risk`, and
+   threshold probabilities.
+
+CLI form:
+
+```powershell
+uv run rksi-fetch-metar --stations RKSI,RKPK,RJTT,WSSS --hours 48 --output data/shared/metar.txt
+uv run rksi-import-metar --config configs/default.yaml --metar-file data/shared/metar.txt --reference-date YYYY-MM-DD
+uv run rksi-sync-duckdb --config configs/default.yaml
+uv run rksi-fetch-openmeteo --config configs/default.yaml --mode daily --date YYYY-MM-DD
+uv run rksi-predict-heat-risk --config configs/default.yaml --date YYYY-MM-DD --cutoff-local HH:MM --plot --explain
+```
+
+Shortcut form:
+
+```powershell
+uv run rksi --date YYYY-MM-DD --cutoff-local HH:MM
+```
+
+The shortcut handles METAR fetch/import/sync and prediction. It now also fetches
+Open-Meteo daily forecast on demand if the date is not already cached.
+
+Retrain only when at least one of these changes:
+
+- new completed historical days are worth incorporating into model calibration;
+- station config, thresholds, cutoffs, or feature/model code changed;
+- Open-Meteo API cache range was extended and you want new validation metrics;
+- adding M3 for another location after entering coordinates in the UI.
+
+Retraining sequence:
+
+```powershell
+uv run rksi-fetch-openmeteo --config configs/default.yaml --mode training --force
+uv run rksi-build-heat-risk-dataset --config configs/default.yaml
+uv run rksi-train-heat-risk --config configs/default.yaml
+uv run rksi-validate-heat-risk --config configs/default.yaml
+```
 
 ## Recommendation
 

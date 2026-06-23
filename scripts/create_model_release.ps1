@@ -1,5 +1,5 @@
 param(
-    [string]$Output = "model-artifacts.zip",
+    [string]$Output = "artifacts/shared/model-artifacts.zip",
     [switch]$Force
 )
 
@@ -21,11 +21,11 @@ function Write-Fail {
 }
 
 $requiredFiles = @(
-    "artifacts/observations.duckdb",
-    "artifacts/heat_risk_model.joblib",
-    "artifacts/rkpk_heat_risk_model.joblib",
-    "artifacts/rjtt_heat_risk_model.joblib",
-    "artifacts/wsss_heat_risk_model.joblib"
+    "artifacts/shared/observations.duckdb",
+    "artifacts/rksi/heat_risk_model.joblib",
+    "artifacts/rkpk/rkpk_heat_risk_model.joblib",
+    "artifacts/rjtt/rjtt_heat_risk_model.joblib",
+    "artifacts/wsss/wsss_heat_risk_model.joblib"
 )
 
 Write-Host "Model artifacts release checklist"
@@ -107,5 +107,5 @@ Write-Host ""
 Write-Host "Next steps:"
 Write-Host "1. Keep this zip as a backup or upload it manually if needed."
 Write-Host "2. Smoke test Telegram locally:"
-Write-Host "   uv run rksi-telegram-report --output artifacts/telegram_report.md --hours 4"
-Write-Host "   node scripts/send_telegram_report.mjs artifacts/telegram_report.md"
+Write-Host "   uv run rksi-telegram-report --output artifacts/shared/telegram_report.md --hours 4"
+Write-Host "   node scripts/send_telegram_report.mjs artifacts/shared/telegram_report.md"

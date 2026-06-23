@@ -12,6 +12,7 @@ uv run <command> [options]
 - [Station Shortcuts](#station-shortcuts)
 - [METAR Commands](#metar-commands)
 - [DuckDB Commands](#duckdb-commands)
+- [Open-Meteo Commands](#open-meteo-commands)
 - [Heat-Risk Model Commands](#heat-risk-model-commands)
 - [Prediction Command](#prediction-command)
 - [Telegram Report Command](#telegram-report-command)
@@ -163,7 +164,7 @@ stations are preserved.
 ```powershell
 uv run rksi-sync-duckdb
 uv run rksi-sync-duckdb --config configs/wsss.yaml
-uv run rksi-sync-duckdb --csv asos.csv --csv RJTT.csv --csv WSSS.csv --db artifacts/observations.duckdb
+uv run rksi-sync-duckdb --csv data/rksi/asos.csv --csv data/rkpk/asos.csv --csv data/rjtt/RJTT.csv --csv data/wsss/WSSS.csv --db artifacts/shared/observations.duckdb
 ```
 
 Options:
@@ -174,6 +175,29 @@ Options:
 | `--csv PATH` | CSV to load. Repeat for multiple files. |
 | `--db PATH` | Output DuckDB path. |
 
+## Open-Meteo Commands
+
+### `rksi-fetch-openmeteo`
+
+Fetch Open-Meteo API data into the configured JSON cache files. Historical
+training data uses the Historical Forecast API and daily data uses the current
+Forecast API.
+
+```powershell
+uv run rksi-fetch-openmeteo --config configs/default.yaml --mode training
+uv run rksi-fetch-openmeteo --config configs/default.yaml --mode daily --date 2026-06-21
+uv run rksi-fetch-openmeteo --config configs/default.yaml --mode training --force
+```
+
+Options:
+
+| Option | Meaning |
+|---|---|
+| `--config PATH` | Station config with Open-Meteo coordinates/cache paths. |
+| `--mode training,daily` | Training fetches the completed observation range; daily fetches one date. |
+| `--date YYYY-MM-DD` | Required for `--mode daily`. |
+| `--force` | Refresh the cache even when a usable file exists. |
+
 ## Heat-Risk Model Commands
 
 ### `rksi-build-heat-risk-dataset`
@@ -182,8 +206,11 @@ Build the multi-cutoff training/validation table.
 
 ```powershell
 uv run rksi-build-heat-risk-dataset --config configs/default.yaml
-uv run rksi-build-heat-risk-dataset --config configs/rjtt.yaml --output artifacts/rjtt_heat_risk_dataset.parquet
+uv run rksi-build-heat-risk-dataset --config configs/rjtt.yaml --output artifacts/rjtt/rjtt_heat_risk_dataset.parquet
 ```
+
+When Open-Meteo API coordinates are configured, this command prepares the
+historical JSON cache before building the dataset.
 
 Options:
 
@@ -232,7 +259,7 @@ Predict remaining heat and final `Tmax` for one date/cutoff.
 ```powershell
 uv run rksi-predict-heat-risk --config configs/default.yaml --date 2026-06-20 --cutoff-local 11:00
 uv run rksi-predict-heat-risk --config configs/default.yaml --date 2026-06-20 --cutoff-local 11:00 --plot --explain
-uv run rksi-predict-heat-risk --config configs/default.yaml --date 2026-06-20 --cutoff-local 11:00 --plot artifacts/rksi_2026-06-20_1100.png
+uv run rksi-predict-heat-risk --config configs/default.yaml --date 2026-06-20 --cutoff-local 11:00 --plot artifacts/rksi/rksi_2026-06-20_1100.png
 uv run rksi-predict-heat-risk --config configs/default.yaml --date 2026-06-20 --cutoff-local 11:00 --bet-temp-c 29
 ```
 
@@ -245,7 +272,7 @@ Options:
 | `--cutoff-local HH:MM` | Required. Cutoff in station local time. |
 | `--dataset PATH` | Optional existing heat-risk parquet to search before live feature build. |
 | `--bet-temp-c C` | Estimate win probability for betting that `C` is not today's final Tmax. |
-| `--plot [PATH]` | Write chart. Omit path for default `artifacts/{station}_{date}_{cutoff}_temperature_curve.png`. |
+| `--plot [PATH]` | Write chart. Omit path for default `artifacts/{station}/{station}_{date}_{cutoff}_temperature_curve.png`. |
 | `--explain` | Print Vietnamese explanation after JSON. |
 
 Prediction does not require rebuilding the full dataset. It builds one feature
@@ -259,8 +286,8 @@ does not contain the requested row.
 Build a combined report for configured stations.
 
 ```powershell
-uv run rksi-telegram-report --output artifacts/telegram_report.md --hours 4
-uv run rksi-telegram-report --no-fetch --no-sync-duckdb --output artifacts/telegram_report.md
+uv run rksi-telegram-report --output artifacts/shared/telegram_report.md --hours 4
+uv run rksi-telegram-report --no-fetch --no-sync-duckdb --output artifacts/shared/telegram_report.md
 uv run rksi-telegram-report --config configs/default.yaml --config configs/wsss.yaml
 ```
 

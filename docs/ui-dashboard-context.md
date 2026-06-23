@@ -22,7 +22,7 @@ Existing source-of-truth code should remain the authority for forecasting behavi
 - Dataset build/train/validate/predict/explain/plot: `src/rksi_tmax/heat_risk.py`
 - CLI wiring and current workflow behavior: `src/rksi_tmax/cli.py`
 
-`predicted_tmax_c` is produced by the model selected in `selected_prediction_method`. For RKSI, recent validation selected M3/Open-Meteo as the main method after training M3 from the M1 feature set plus Open-Meteo forecast features. M1 remains available as a selectable METAR/ASOS-only fallback. Other configured locations do not currently have Open-Meteo history/live config unless explicitly added.
+`predicted_tmax_c` is produced by the model selected in `selected_prediction_method`. M3/Open-Meteo trains from the M1 feature set plus daily and hourly Open-Meteo API forecast features when a location has coordinates and JSON cache paths configured. M1 remains available as a selectable METAR/ASOS-only fallback.
 
 ## UI File Map
 
@@ -32,8 +32,8 @@ Update this section whenever module boundaries change.
 - `src/rksi_tmax/ui_state.py`: session state helpers and lightweight dataclasses for UI selections/results.
 - `src/rksi_tmax/ui_components.py`: reusable Streamlit blocks for metrics, JSON expanders, status panels, config summaries, and artifact links.
 - `src/rksi_tmax/ui_tabs/metar_tab.py`: METAR fetch/import/sync/verify tab.
-- `src/rksi_tmax/ui_tabs/location_tab.py`: create new location config and optional empty ASOS CSV header.
-- `src/rksi_tmax/ui_tabs/train_tab.py`: dataset build, train, validate, and metrics display tab.
+- `src/rksi_tmax/ui_tabs/location_tab.py`: create new location config, optional empty ASOS CSV header, and Open-Meteo API config.
+- `src/rksi_tmax/ui_tabs/train_tab.py`: Open-Meteo cache preparation, dataset build, train, validate, and metrics display tab.
 - `src/rksi_tmax/ui_tabs/predict_tab.py`: prediction controls, cut-off resolution, bet temperature input, explain text, JSON output, and optional plot.
 - `src/rksi_tmax/services/config_service.py`: discover and load station configs.
 - `src/rksi_tmax/services/db_service.py`: latest observation lookup, row counts, station coverage, and DuckDB health checks.
@@ -49,7 +49,7 @@ Service modules are the boundary between Streamlit UI code and existing project 
 - `config_service` owns config discovery, display names, safe config loading, config-only location deletion, and new location config creation.
 - `db_service` owns read-only database status and latest-observation queries.
 - `metar_service` owns fetch/import/sync/verify workflow. It must avoid importing multi-station METAR text into the wrong station CSV.
-- `training_service` owns dataset build, model train, validation calls, and compact metric summaries.
+- `training_service` owns Open-Meteo cache preparation, dataset build, model train, validation calls, and compact metric summaries.
 - `prediction_service` owns prediction input resolution, including latest cut-off from DuckDB, custom cut-off, model-method options, bet temperature, explanation text, JSON result, and plots.
 - `artifact_service` owns filesystem inspection for generated artifacts and should not know Streamlit UI layout.
 
@@ -75,7 +75,7 @@ Service modules are the boundary between Streamlit UI code and existing project 
 - Keep UI modules small enough that an LLM can read only the entrypoint, one tab, and one service for most edits.
 - When Open-Meteo availability changes for a location, update config docs and this context file.
 - Deleting a location from the UI deletes only its YAML config; raw CSV, DuckDB rows, and artifacts remain unless an explicit cleanup tool is added.
-- Adding a location from the UI creates a YAML config and, by default, an empty ASOS CSV header. It does not train a model.
+- Adding a location from the UI creates a YAML config and, by default, an empty ASOS CSV header. It can also save Open-Meteo coordinates/cache paths. It does not train a model; after adding historical CSV rows, sync DuckDB before training when `prefer_duckdb` is enabled.
 - M3/Open-Meteo should appear as a prediction option only when the model bundle contains an Open-Meteo regressor and Open-Meteo feature columns.
 
 ## Operation

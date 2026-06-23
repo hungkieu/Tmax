@@ -531,6 +531,8 @@ def _add_openmeteo_features(dataset: pd.DataFrame, config: ProjectConfig) -> pd.
         config.openmeteo_history_csv,
         config.openmeteo_live_csv_pattern,
         dataset["local_date"],
+        config.openmeteo_history_json,
+        config.openmeteo_live_json_pattern,
     )
     if forecast is None:
         return dataset

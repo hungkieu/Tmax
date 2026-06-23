@@ -6,7 +6,11 @@ import pandas as pd
 
 from rksi_tmax.config import ProjectConfig
 from rksi_tmax.features import make_daily_dataset
-from rksi_tmax.openmeteo import load_openmeteo_daily, load_openmeteo_features_for_dates
+from rksi_tmax.openmeteo import (
+    load_openmeteo_daily,
+    load_openmeteo_features_for_dates,
+    load_openmeteo_json,
+)
 
 
 def test_load_openmeteo_daily_skips_metadata(tmp_path: Path) -> None:
@@ -36,6 +40,64 @@ def test_live_openmeteo_file_overrides_history_for_date(tmp_path: Path) -> None:
     assert frame is not None
     assert frame.loc[0, "openmeteo_tmax_c"] == 27.0
     assert frame.loc[0, "openmeteo_weather_code"] == 61
+
+
+def test_load_openmeteo_json_adds_hourly_features(tmp_path: Path) -> None:
+    json_path = tmp_path / "openmeteo-rksi-history.json"
+    json_path.write_text(
+        """
+{
+  "daily": {
+    "time": ["2026-06-20"],
+    "weather_code": [3],
+    "temperature_2m_max": [29.5],
+    "rain_sum": [1.2],
+    "precipitation_sum": [1.5],
+    "precipitation_hours": [2],
+    "wind_speed_10m_max": [24.0],
+    "wind_gusts_10m_max": [35.0]
+  },
+  "hourly": {
+    "time": ["2026-06-20T00:00", "2026-06-20T09:00", "2026-06-20T12:00"],
+    "temperature_2m": [20.0, 25.0, 30.0],
+    "weather_code": [1, 2, 3],
+    "wind_speed_10m": [5.0, 10.0, 20.0],
+    "wind_gusts_10m": [7.0, 16.0, 28.0],
+    "cloud_cover": [10, 40, 80],
+    "visibility": [10000, 7000, 5000],
+    "rain": [0.0, 0.2, 1.0],
+    "precipitation": [0.0, 0.3, 1.2],
+    "precipitation_probability": [5, 20, 70]
+  }
+}
+""",
+        encoding="utf-8",
+    )
+
+    frame = load_openmeteo_json(json_path)
+
+    assert frame.loc[0, "openmeteo_tmax_c"] == 29.5
+    assert frame.loc[0, "openmeteo_hourly_temp_max_c"] == 30.0
+    assert frame.loc[0, "openmeteo_hourly_temp_09z_c"] == 25.0
+    assert frame.loc[0, "openmeteo_hourly_precipitation_probability_max_pct"] == 70
+
+
+def test_json_live_overrides_history_for_date(tmp_path: Path) -> None:
+    history_path = tmp_path / "openmeteo-rksi-history.json"
+    live_path = tmp_path / "openmeteo-rksi-2026-06-21.json"
+    _write_openmeteo_json(history_path, "2026-06-21", 24.0)
+    _write_openmeteo_json(live_path, "2026-06-21", 28.0)
+
+    frame = load_openmeteo_features_for_dates(
+        None,
+        None,
+        ["2026-06-21"],
+        history_path,
+        str(tmp_path / "openmeteo-rksi-{date}.json"),
+    )
+
+    assert frame is not None
+    assert frame.loc[0, "openmeteo_tmax_c"] == 28.0
 
 
 def test_make_daily_dataset_adds_openmeteo_features(tmp_path: Path) -> None:
@@ -76,6 +138,22 @@ def _write_openmeteo_csv(path: Path, rows: list[tuple[str, float, int, float]]) 
     for local_date, tmax, code, precipitation in rows:
         lines.append(f"{local_date},{tmax},{code},{precipitation},1.0,{precipitation},20.0,30.0")
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_openmeteo_json(path: Path, local_date: str, tmax: float) -> None:
+    path.write_text(
+        (
+            '{"daily":{"time":["%s"],"weather_code":[3],"temperature_2m_max":[%s],'
+            '"rain_sum":[0],"precipitation_sum":[0],"precipitation_hours":[0],'
+            '"wind_speed_10m_max":[10],"wind_gusts_10m_max":[20]},'
+            '"hourly":{"time":["%sT09:00"],"temperature_2m":[%s],"weather_code":[3],'
+            '"wind_speed_10m":[10],"wind_gusts_10m":[20],"cloud_cover":[20],'
+            '"visibility":[10000],"rain":[0],"precipitation":[0],'
+            '"precipitation_probability":[0]}}'
+        )
+        % (local_date, tmax, local_date, tmax),
+        encoding="utf-8",
+    )
 
 
 def _observations() -> pd.DataFrame:

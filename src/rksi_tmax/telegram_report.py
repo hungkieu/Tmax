@@ -26,8 +26,8 @@ DEFAULT_STATIONS = ("RKSI", "RKPK", "RJTT", "WSSS")
 def telegram_report_main() -> None:
     _configure_stdout()
     parser = argparse.ArgumentParser(description="Build a combined Telegram heat-risk report.")
-    parser.add_argument("--output", default="artifacts/telegram_report.md")
-    parser.add_argument("--metar-file", default="metar.txt")
+    parser.add_argument("--output", default="artifacts/shared/telegram_report.md")
+    parser.add_argument("--metar-file", default="data/shared/metar.txt")
     parser.add_argument("--hours", type=int, default=4)
     parser.add_argument("--fetch", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--sync-duckdb", action=argparse.BooleanOptionalAction, default=True)
@@ -52,8 +52,8 @@ def telegram_report_main() -> None:
 
 def build_telegram_report(
     config_paths: tuple[str, ...] = DEFAULT_CONFIG_PATHS,
-    metar_file: str | Path = "metar.txt",
-    output_path: str | Path = "artifacts/telegram_report.md",
+    metar_file: str | Path = "data/shared/metar.txt",
+    output_path: str | Path = "artifacts/shared/telegram_report.md",
     hours: int = 4,
     fetch: bool = True,
     sync_duckdb: bool = True,

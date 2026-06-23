@@ -1,35 +1,36 @@
 station: WSSS
 timezone: Asia/Singapore
-cutoff_local: "09:00"
-complete_day_min_local: "23:00"
+cutoff_local: 09:00
+complete_day_min_local: '23:00'
 target: tmax
-
-input_csv: WSSS.csv
-input_db: artifacts/observations.duckdb
+input_csv: data/wsss/WSSS.csv
+input_db: artifacts/shared/observations.duckdb
 prefer_duckdb: true
 raw_csv_files:
-  - asos.csv
-  - RJTT.csv
-  - WSSS.csv
-
+- data/wsss/WSSS.csv
 heat_risk_cutoffs:
-  - "09:00"
-  - "10:00"
-  - "11:00"
-  - "12:00"
-  - "13:00"
+- 09:00
+- '10:00'
+- '11:00'
+- '12:00'
+- '13:00'
 heat_risk_thresholds_c:
-  - 27.0
-  - 28.0
-  - 29.0
-  - 30.0
-  - 31.0
-  - 32.0
-  - 33.0
-heat_risk_dataset_parquet: artifacts/wsss_heat_risk_dataset.parquet
-heat_risk_model_path: artifacts/wsss_heat_risk_model.joblib
-heat_risk_metrics_path: artifacts/wsss_heat_risk_metrics.json
-
+- 27.0
+- 28.0
+- 29.0
+- 30.0
+- 31.0
+- 32.0
+- 33.0
+heat_risk_dataset_parquet: artifacts/wsss/wsss_heat_risk_dataset.parquet
+heat_risk_model_path: artifacts/wsss/wsss_heat_risk_model.joblib
+heat_risk_metrics_path: artifacts/wsss/wsss_heat_risk_metrics.json
 test_fraction: 0.2
 random_state: 42
 feature_missing_threshold: 0.85
+openmeteo_history_json: data/wsss/openmeteo-wsss-history.json
+openmeteo_live_json_pattern: data/wsss/openmeteo-wsss-{date}.json
+openmeteo_latitude: 1.3551
+openmeteo_longitude: 103.9901
+openmeteo_timezone: GMT
+openmeteo_training_start_date: '2023-01-01'

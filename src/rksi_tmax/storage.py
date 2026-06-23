@@ -68,6 +68,7 @@ def sync_duckdb_from_csv(
                 all_varchar = true,
                 nullstr = ['null', 'M', ''],
                 ignore_errors = true,
+                strict_mode = false,
                 union_by_name = true
             )
             """,

@@ -20,8 +20,9 @@ curve, and is the next update worth running?
   - `HistGradientBoostingClassifier` for thermal phase and hot thresholds.
   - horizon-specific regressors for `T+30m` through `T+180m`.
   - `M3` Open-Meteo enhanced regressor, trained from the M1 feature set plus
-    daily Open-Meteo forecast features such as forecast Tmax,
-    rain/precipitation, weather code, wind speed, and gusts.
+    daily and hourly Open-Meteo API forecast features such as forecast Tmax,
+    hourly temperature shape, rain/precipitation, weather code, wind, cloud,
+    visibility, and precipitation probability.
 - Default training/validation cutoffs: `09:00`, `10:00`, `11:00`,
   `12:00`, and `13:00` local.
 - Default thresholds: whole-degree values configured in `configs/default.yaml`.
@@ -30,13 +31,16 @@ curve, and is the next update worth running?
   clearing signals up to the cutoff.
 - Feature-expanded models also use phase/plateau signals, last-3-day regime
   prior, and prior-only monthly climatology.
-- Open-Meteo features are optional. If `openmeteo_history_csv` or the live
-  `{date}` file is missing, prediction still runs with imputed values and
-  marks `openmeteo_features_available: false`.
+- Open-Meteo features are optional. If coordinates/cache paths are missing or
+  the date is not cached, prediction still runs with imputed values and marks
+  `openmeteo_features_available: false`.
 - Remaining heat prediction selects the operational method by validation MAE:
   - classify whether meaningful warming remains;
   - predict remaining heat conditional on warming continuing;
   - compare direct, two-stage, M1, and Open-Meteo enhanced regressors.
+- M3 trains both a daily-only Open-Meteo variant and a daily+hourly variant.
+  Validation metrics include `openmeteo_daily_tmax_mae_c`,
+  `openmeteo_hourly_tmax_mae_c`, and `selected_openmeteo_variant`.
 
 The model must not use observations after the requested cutoff in features.
 Future temperatures after cutoff are targets only.
@@ -51,7 +55,7 @@ This reads DuckDB when available, otherwise the configured CSV source, builds
 one row per configured cutoff per local day, and writes:
 
 ```text
-artifacts/heat_risk_dataset.parquet
+artifacts/rksi/heat_risk_dataset.parquet
 ```
 
 ## Train
@@ -63,8 +67,8 @@ uv run rksi-train-heat-risk
 This writes:
 
 ```text
-artifacts/heat_risk_model.joblib
-artifacts/heat_risk_metrics.json
+artifacts/rksi/heat_risk_model.joblib
+artifacts/rksi/heat_risk_metrics.json
 ```
 
 Recent RKSI result on the current dataset after training M3 from M1 plus
@@ -94,11 +98,11 @@ uv run rksi-validate-heat-risk
 This writes:
 
 ```text
-artifacts/heat_risk_validation_report.json
-artifacts/heat_risk_top_errors.csv
-artifacts/heat_risk_top_error_days.csv
-artifacts/heat_risk_diagnostics.png
-artifacts/heat_risk_thermal_curve_diagnostics.png
+artifacts/rksi/heat_risk_validation_report.json
+artifacts/rksi/heat_risk_top_errors.csv
+artifacts/rksi/heat_risk_top_error_days.csv
+artifacts/rksi/heat_risk_diagnostics.png
+artifacts/rksi/heat_risk_thermal_curve_diagnostics.png
 ```
 
 The diagnostics image includes:
@@ -145,7 +149,7 @@ uv run rksi-predict-heat-risk --date 2026-06-18 --cutoff-local 12:30 --plot --ex
 You can provide a custom path:
 
 ```powershell
-uv run rksi-predict-heat-risk --date 2026-06-18 --cutoff-local 12:30 --plot artifacts/rksi_2026-06-18_1230_curve.png
+uv run rksi-predict-heat-risk --date 2026-06-18 --cutoff-local 12:30 --plot artifacts/rksi/rksi_2026-06-18_1230_curve.png
 ```
 
 To ask "I bet X C will not be today's highest temperature; what is my win
@@ -241,12 +245,12 @@ Example output:
 - `prediction_method`: selected operational method from validation. It can be
   `direct`, `two_stage`, `m1`, or `openmeteo`.
 - `openmeteo_forecast_tmax_c`: raw daily Tmax forecast from the configured
-  Open-Meteo CSV, when available for the forecast date.
+  Open-Meteo API cache, when available for the forecast date.
 - `openmeteo_predicted_tmax_c`: M3 output after combining Open-Meteo features
   with the observed pre-cutoff ASOS/METAR features. This equals
   `predicted_tmax_c` when `prediction_method` is `openmeteo`.
 - `openmeteo_features_available`: whether the prediction row had an
-  Open-Meteo forecast for that local date. If the live file is missing, the
+  Open-Meteo forecast for that local date. If the live cache is missing, the
   model can still run with imputed values but this field is `false`.
 - `thermal_phase`: estimated current phase of the daily temperature curve.
 - `future_curve`: predicted temperatures every 30 minutes through 180 minutes

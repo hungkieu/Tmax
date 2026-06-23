@@ -3,12 +3,18 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import pytest
+
 from rksi_tmax.config import ProjectConfig
 from rksi_tmax.metar_import import ASOS_COLUMNS
 from rksi_tmax.services.metar_service import import_many_station_metars
 
 
-def test_import_many_station_metars_scopes_rows_per_config(tmp_path: Path) -> None:
+def test_import_many_station_metars_scopes_rows_per_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
     metar_path = tmp_path / "metar.txt"
     rksi_csv = tmp_path / "rksi.csv"
     rkpk_csv = tmp_path / "rkpk.csv"

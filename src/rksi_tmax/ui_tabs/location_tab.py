@@ -4,14 +4,17 @@ import streamlit as st
 
 from rksi_tmax.services.config_service import (
     ConfigOption,
-    LocationConfigDraft,
-    create_location_config,
-    default_location_draft,
+    update_location_openmeteo_config,
 )
+from rksi_tmax.config import ProjectConfig
 from rksi_tmax.ui_components import render_json
 
 
-def render(config_options: list[ConfigOption]) -> None:
+def render(
+    config_options: list[ConfigOption],
+    selected_config: ProjectConfig,
+    selected_config_path: str | None,
+) -> None:
     st.subheader("Locations")
     if config_options:
         render_json(
@@ -25,66 +28,87 @@ def render(config_options: list[ConfigOption]) -> None:
             ],
         )
 
-    st.caption("Create a YAML config and an empty ASOS CSV header for a new station.")
-    station = st.text_input("Station ICAO", value="").strip().upper()
-    defaults = default_location_draft(station or "NEW")
-    with st.form("create-location-form"):
-        timezone = st.text_input("Timezone", value=defaults.timezone)
-        cutoff_local = st.text_input("Default cutoff local", value=defaults.cutoff_local)
-        complete_day_min_local = st.text_input(
-            "Complete day minimum local",
-            value=defaults.complete_day_min_local,
+    st.caption("Enable or update Open-Meteo M3 for the selected location.")
+    _render_openmeteo_config_form(selected_config, selected_config_path)
+
+
+def _render_openmeteo_config_form(config: ProjectConfig, config_path: str | None) -> None:
+    if not config_path:
+        st.warning("Select a location config before updating Open-Meteo.")
+        return
+
+    station_lower = config.station.lower()
+    default_history_json = f"data/{station_lower}/openmeteo-{station_lower}-history.json"
+    default_live_json_pattern = f"data/{station_lower}/openmeteo-{station_lower}-{{date}}.json"
+    openmeteo_latitude = getattr(config, "openmeteo_latitude", None)
+    openmeteo_longitude = getattr(config, "openmeteo_longitude", None)
+    openmeteo_timezone = getattr(config, "openmeteo_timezone", "GMT")
+    openmeteo_history_json = getattr(config, "openmeteo_history_json", None)
+    openmeteo_live_json_pattern = getattr(config, "openmeteo_live_json_pattern", None)
+    openmeteo_training_start_date = getattr(config, "openmeteo_training_start_date", None)
+    openmeteo_training_end_date = getattr(config, "openmeteo_training_end_date", None)
+    has_openmeteo = openmeteo_latitude is not None and openmeteo_longitude is not None
+    status = "configured" if has_openmeteo else "not configured"
+    st.caption(f"Selected: {config.station} ({status})")
+    with st.form(f"openmeteo-config-{config_path}"):
+        latitude = st.number_input(
+            "Open-Meteo latitude",
+            value=float(openmeteo_latitude) if openmeteo_latitude is not None else 0.0,
+            min_value=-90.0,
+            max_value=90.0,
+            format="%.6f",
+            key=f"openmeteo-latitude-{config_path}",
         )
-        input_csv = st.text_input("Input CSV", value=defaults.input_csv)
-        input_db = st.text_input("DuckDB path", value=defaults.input_db)
-        raw_csv_files = st.text_input("Raw CSV files", value=input_csv)
-        heat_risk_cutoffs = st.text_input(
-            "Heat-risk cutoffs",
-            value=", ".join(defaults.heat_risk_cutoffs),
+        longitude = st.number_input(
+            "Open-Meteo longitude",
+            value=float(openmeteo_longitude) if openmeteo_longitude is not None else 0.0,
+            min_value=-180.0,
+            max_value=180.0,
+            format="%.6f",
+            key=f"openmeteo-longitude-{config_path}",
         )
-        heat_risk_thresholds = st.text_input(
-            "Heat-risk thresholds C",
-            value=", ".join(str(value) for value in defaults.heat_risk_thresholds_c),
+        timezone = st.text_input(
+            "Open-Meteo timezone",
+            value=openmeteo_timezone or "GMT",
+            key=f"openmeteo-timezone-{config_path}",
         )
-        use_openmeteo = st.checkbox("Configure Open-Meteo files")
-        openmeteo_history_csv = None
-        openmeteo_live_csv_pattern = None
-        if use_openmeteo:
-            station_lower = (station or "station").lower()
-            openmeteo_history_csv = st.text_input(
-                "Open-Meteo history CSV",
-                value=f"openmeteo-{station_lower}.csv",
-            )
-            openmeteo_live_csv_pattern = st.text_input(
-                "Open-Meteo live CSV pattern",
-                value=f"openmeteo-{station_lower}-{{date}}.csv",
-            )
-        create_csv = st.checkbox("Create empty input CSV if missing", value=True)
-        submitted = st.form_submit_button("Create location", type="primary")
+        history_json = st.text_input(
+            "Open-Meteo training cache JSON",
+            value=str(openmeteo_history_json) if openmeteo_history_json else default_history_json,
+            key=f"openmeteo-history-json-{config_path}",
+        )
+        live_json_pattern = st.text_input(
+            "Open-Meteo daily cache JSON pattern",
+            value=openmeteo_live_json_pattern or default_live_json_pattern,
+            key=f"openmeteo-live-json-pattern-{config_path}",
+        )
+        training_start_date = st.text_input(
+            "Open-Meteo training start date",
+            value=openmeteo_training_start_date or "2023-01-01",
+            key=f"openmeteo-training-start-{config_path}",
+        )
+        training_end_date = st.text_input(
+            "Open-Meteo training end date",
+            value=openmeteo_training_end_date or "",
+            key=f"openmeteo-training-end-{config_path}",
+        )
+        submitted = st.form_submit_button("Save Open-Meteo M3 config", type="primary")
 
     if submitted:
         try:
-            draft = LocationConfigDraft(
-                station=station,
+            result = update_location_openmeteo_config(
+                config_path,
+                latitude=latitude,
+                longitude=longitude,
                 timezone=timezone,
-                cutoff_local=cutoff_local,
-                complete_day_min_local=complete_day_min_local,
-                input_csv=input_csv,
-                input_db=input_db,
-                raw_csv_files=tuple(_split_csv(raw_csv_files)),
-                heat_risk_cutoffs=tuple(_split_csv(heat_risk_cutoffs)),
-                heat_risk_thresholds_c=tuple(float(value) for value in _split_csv(heat_risk_thresholds)),
-                openmeteo_history_csv=openmeteo_history_csv,
-                openmeteo_live_csv_pattern=openmeteo_live_csv_pattern,
+                history_json=history_json,
+                live_json_pattern=live_json_pattern,
+                training_start_date=training_start_date,
+                training_end_date=training_end_date or None,
             )
-            result = create_location_config(draft, create_input_csv=create_csv)
         except Exception as exc:
             st.error(str(exc))
         else:
-            st.success(f"Created {result['station']} config.")
-            render_json("Create result", result)
+            st.success(f"Updated Open-Meteo M3 config for {result['station']}.")
+            render_json("Open-Meteo config result", result)
             st.rerun()
-
-
-def _split_csv(value: str) -> list[str]:
-    return [item.strip() for item in value.split(",") if item.strip()]

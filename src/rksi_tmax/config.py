@@ -13,12 +13,19 @@ class ProjectConfig:
     cutoff_local: str = "09:00"
     complete_day_min_local: str = "23:00"
     target: str = "tmax"
-    input_csv: Path = Path("asos.csv")
-    input_db: Path = Path("artifacts/observations.duckdb")
+    input_csv: Path = Path("data/rksi/asos.csv")
+    input_db: Path = Path("artifacts/shared/observations.duckdb")
     prefer_duckdb: bool = True
-    raw_csv_files: tuple[Path, ...] = (Path("asos.csv"),)
+    raw_csv_files: tuple[Path, ...] = (Path("data/rksi/asos.csv"),)
     openmeteo_history_csv: Path | None = None
     openmeteo_live_csv_pattern: str | None = None
+    openmeteo_history_json: Path | None = None
+    openmeteo_live_json_pattern: str | None = None
+    openmeteo_latitude: float | None = None
+    openmeteo_longitude: float | None = None
+    openmeteo_timezone: str = "GMT"
+    openmeteo_training_start_date: str | None = None
+    openmeteo_training_end_date: str | None = None
     heat_risk_cutoffs: tuple[str, ...] = (
         "06:00",
         "07:00",
@@ -32,9 +39,9 @@ class ProjectConfig:
         "15:00",
     )
     heat_risk_thresholds_c: tuple[float, ...] = (28.0, 29.0, 30.0, 31.0)
-    heat_risk_dataset_parquet: Path = Path("artifacts/heat_risk_dataset.parquet")
-    heat_risk_model_path: Path = Path("artifacts/heat_risk_model.joblib")
-    heat_risk_metrics_path: Path = Path("artifacts/heat_risk_metrics.json")
+    heat_risk_dataset_parquet: Path = Path("artifacts/rksi/heat_risk_dataset.parquet")
+    heat_risk_model_path: Path = Path("artifacts/rksi/heat_risk_model.joblib")
+    heat_risk_metrics_path: Path = Path("artifacts/rksi/heat_risk_metrics.json")
     test_fraction: float = 0.2
     random_state: int = 42
     feature_missing_threshold: float = 0.85
@@ -75,6 +82,7 @@ def load_config(path: str | Path = "configs/default.yaml") -> ProjectConfig:
         "heat_risk_model_path",
         "heat_risk_metrics_path",
         "openmeteo_history_csv",
+        "openmeteo_history_json",
     }
     values = {
         key: Path(value) if key in path_fields and value is not None else value
@@ -90,4 +98,10 @@ def load_config(path: str | Path = "configs/default.yaml") -> ProjectConfig:
         values["heat_risk_cutoffs"] = tuple(_normalize_hhmm(value) for value in values["heat_risk_cutoffs"])
     if "heat_risk_thresholds_c" in values:
         values["heat_risk_thresholds_c"] = tuple(float(value) for value in values["heat_risk_thresholds_c"])
+    for key in ("openmeteo_latitude", "openmeteo_longitude"):
+        if key in values and values[key] is not None:
+            values[key] = float(values[key])
+    for key in ("openmeteo_training_start_date", "openmeteo_training_end_date"):
+        if key in values and values[key] is not None:
+            values[key] = str(values[key])
     return ProjectConfig(**values)

@@ -76,7 +76,9 @@ def _station_scoped_metar_file(station: str, metar_path: str | Path) -> Path:
         for line in source.read_text(encoding="utf-8").splitlines()
         if _line_station(line) == station.upper()
     ]
-    scoped = source.with_name(f"{source.stem}-{station.lower()}-scoped{source.suffix or '.txt'}")
+    directory = Path("data") / station.lower()
+    directory.mkdir(parents=True, exist_ok=True)
+    scoped = directory / f"{source.stem}-{station.lower()}-scoped{source.suffix or '.txt'}"
     scoped.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     return scoped
 

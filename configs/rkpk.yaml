@@ -4,13 +4,18 @@ cutoff_local: "09:00"
 complete_day_min_local: "23:00"
 target: tmax
 
-input_csv: asos.csv
-input_db: artifacts/observations.duckdb
+input_csv: data/rkpk/asos.csv
+input_db: artifacts/shared/observations.duckdb
 prefer_duckdb: true
 raw_csv_files:
-  - asos.csv
-  - RJTT.csv
-  - WSSS.csv
+  - data/rkpk/asos.csv
+openmeteo_history_csv: data/rkpk/openmeteo-rkpk.csv
+openmeteo_live_csv_pattern: data/rkpk/openmeteo-rkpk-{date}.csv
+openmeteo_history_json: data/rkpk/openmeteo-rkpk-history.json
+openmeteo_live_json_pattern: data/rkpk/openmeteo-rkpk-{date}.json
+openmeteo_latitude: 35.179444
+openmeteo_longitude: 128.938333
+openmeteo_timezone: GMT
 
 heat_risk_cutoffs:
   - "09:00"
@@ -26,9 +31,9 @@ heat_risk_thresholds_c:
   - 31.0
   - 32.0
   - 33.0
-heat_risk_dataset_parquet: artifacts/rkpk_heat_risk_dataset.parquet
-heat_risk_model_path: artifacts/rkpk_heat_risk_model.joblib
-heat_risk_metrics_path: artifacts/rkpk_heat_risk_metrics.json
+heat_risk_dataset_parquet: artifacts/rkpk/rkpk_heat_risk_dataset.parquet
+heat_risk_model_path: artifacts/rkpk/rkpk_heat_risk_model.joblib
+heat_risk_metrics_path: artifacts/rkpk/rkpk_heat_risk_metrics.json
 
 test_fraction: 0.2
 random_state: 42

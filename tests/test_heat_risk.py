@@ -8,9 +8,12 @@ from rksi_tmax.config import ProjectConfig
 from rksi_tmax.heat_risk import (
     _add_future_curve_targets,
     _false_plateau_rule,
+    _integer_tmax_win_rates,
     format_heat_risk_explanation,
     _make_single_cutoff_dataset,
+    _metrics_by_cutoff,
     _not_highest_bet_output,
+    openmeteo_heat_risk_feature_columns,
     _prediction_interval,
     _resolve_prediction_method,
     _regime_break_output,
@@ -122,6 +125,70 @@ def test_underprediction_probabilities_are_monotonic() -> None:
 
     assert probabilities["1.5"][0] == 0.6
     assert probabilities["2.0"][0] == 0.6
+
+
+def test_integer_tmax_win_rates_use_half_up_rounded_candidates() -> None:
+    frame = pd.DataFrame(
+        {
+            "predicted_tmax_c": [27.6, 27.4, 28.4],
+            "tmax_c": [28.0, 28.0, 27.0],
+        }
+    )
+
+    rates = _integer_tmax_win_rates(frame)
+
+    assert rates["n"] == 3
+    assert rates["tmax_win_count"] == 1
+    assert rates["tmax_win_rate"] == pytest.approx(1 / 3)
+    assert rates["tmax_plus_1_win_count"] == 1
+    assert rates["tmax_plus_1_win_rate"] == pytest.approx(1 / 3)
+    assert rates["tmax_minus_1_win_count"] == 1
+    assert rates["tmax_minus_1_win_rate"] == pytest.approx(1 / 3)
+    assert rates["combined_tmax_minus_1_to_plus_1_win_count"] == 3
+    assert rates["combined_tmax_minus_1_to_plus_1_win_rate"] == 1.0
+
+
+def test_openmeteo_feature_columns_use_available_cache_rows_for_missingness() -> None:
+    frame = pd.DataFrame(
+        {
+            "base_feature": range(1000),
+            "openmeteo_tmax_c": [np.nan] * 890 + list(range(110)),
+            "openmeteo_hourly_temp_mean_c": [np.nan] * 890 + list(range(110)),
+        }
+    )
+
+    columns = openmeteo_heat_risk_feature_columns(
+        frame,
+        ["base_feature"],
+        missing_threshold=0.85,
+    )
+
+    assert "base_feature" in columns
+    assert "openmeteo_tmax_c" in columns
+    assert "openmeteo_hourly_temp_mean_c" in columns
+
+
+def test_metrics_by_cutoff_include_integer_tmax_win_rates() -> None:
+    frame = pd.DataFrame(
+        {
+            "cutoff_local": ["09:00", "09:00", "10:00"],
+            "predicted_tmax_c": [27.6, 27.4, 28.4],
+            "predicted_remaining_heat_c": [1.0, 1.0, 1.0],
+            "remaining_heat_target_c": [1.0, 2.0, 0.0],
+            "tmax_c": [28.0, 28.0, 27.0],
+            "tmpc_max_to_cutoff": [27.0, 26.0, 27.0],
+        }
+    )
+
+    rows = _metrics_by_cutoff(frame)
+
+    first = rows[0]
+    assert first["cutoff_local"] == "09:00"
+    assert first["n"] == 2
+    assert first["tmax_win_count"] == 1
+    assert first["tmax_win_rate"] == 0.5
+    assert first["tmax_plus_1_win_count"] == 1
+    assert first["combined_tmax_minus_1_to_plus_1_win_rate"] == 1.0
 
 
 def test_warming_strength_output_derives_class_probabilities() -> None:
@@ -348,6 +415,26 @@ def test_future_curve_targets_use_local_minutes_and_keep_missing_horizons() -> N
 
     assert result.loc[0, "future_tmpc_plus_30m"] == 20.0
     assert pd.isna(result.loc[0, "future_tmpc_plus_60m"])
+    assert result.loc[0, "future_tmpc_plus_120m"] == 25.0
+
+
+def test_future_curve_targets_use_nearest_observation_within_tolerance() -> None:
+    frame = pd.DataFrame({"local_date": ["2024-06-02"], "cutoff_minutes": [600]})
+    observations = pd.DataFrame(
+        {
+            "valid_local": pd.to_datetime(
+                [
+                    "2024-06-02 10:20+09:00",
+                    "2024-06-02 11:52+09:00",
+                ]
+            ),
+            "tmpf": [68.0, 77.0],
+        }
+    )
+
+    result = _add_future_curve_targets(frame, observations, cutoff_minutes=600)
+
+    assert result.loc[0, "future_tmpc_plus_30m"] == 20.0
     assert result.loc[0, "future_tmpc_plus_120m"] == 25.0
 
 

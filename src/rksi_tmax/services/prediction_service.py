@@ -92,4 +92,5 @@ def _method_label(method: str) -> str:
 
 def _plot_path(config: ProjectConfig, prediction: dict[str, object]) -> Path:
     cutoff = str(prediction["cutoff_local"]).replace(":", "")
-    return Path("artifacts") / f"{config.station.lower()}_{prediction['local_date']}_{cutoff}_ui_curve.png"
+    station = config.station.lower()
+    return Path("artifacts") / station / f"{station}_{prediction['local_date']}_{cutoff}_ui_curve.png"

@@ -27,6 +27,11 @@ from sklearn.pipeline import Pipeline
 
 from rksi_tmax.config import ProjectConfig, _hhmm_to_minutes, _minutes_to_hhmm
 from rksi_tmax.features import load_observations, make_daily_dataset
+from rksi_tmax.openmeteo import (
+    ensure_openmeteo_live_data,
+    ensure_openmeteo_training_data,
+    openmeteo_cache_has_date,
+)
 
 
 TARGET_COLUMN = "remaining_heat_target_c"
@@ -57,6 +62,7 @@ UNDERPREDICTION_THRESHOLDS_C = (1.5, 2.0)
 CONTINUING_HEAT_THRESHOLD_C = 0.5
 SENSITIVE_PROBABILITY_RANGE = (0.20, 0.70)
 FUTURE_CURVE_HORIZONS_MINUTES = (30, 60, 90, 120, 150, 180)
+FUTURE_CURVE_TARGET_TOLERANCE_MINUTES = 20
 THERMAL_PHASE_LABELS = (
     "pre_peak_ramp",
     "peak_plateau",
@@ -106,6 +112,17 @@ def build_heat_risk_dataset(
     output_parquet: str | Path | None = None,
 ) -> pd.DataFrame:
     observations = load_observations(input_csv or config.input_csv, config)
+    date_range = _complete_observation_date_range(observations, config)
+    if date_range is not None:
+        start_date, end_date = _openmeteo_training_date_range(config, date_range)
+        ensure_openmeteo_training_data(
+            config.openmeteo_history_json,
+            config.openmeteo_latitude,
+            config.openmeteo_longitude,
+            start_date,
+            end_date,
+            timezone=config.openmeteo_timezone,
+        )
     dataset = make_heat_risk_dataset(observations, config)
 
     output_path = Path(output_parquet or config.heat_risk_dataset_parquet)
@@ -152,8 +169,12 @@ def _add_future_curve_targets(
     output = frame.copy()
     for horizon in FUTURE_CURVE_HORIZONS_MINUTES:
         target_minute = cutoff_minutes + horizon
+        candidates = data.assign(target_distance=(data["local_minutes"] - target_minute).abs())
         target = (
-            data[data["local_minutes"] == target_minute][["local_date", "tmpc"]]
+            candidates[candidates["target_distance"] <= FUTURE_CURVE_TARGET_TOLERANCE_MINUTES]
+            .sort_values(["local_date", "target_distance", "local_minutes"])
+            .groupby("local_date", as_index=False)
+            .head(1)[["local_date", "tmpc"]]
             .dropna(subset=["tmpc"])
             .rename(columns={"tmpc": _future_target_column(horizon)})
         )
@@ -228,12 +249,39 @@ def openmeteo_heat_risk_feature_columns(
     base_columns: list[str],
     missing_threshold: float = 1.0,
 ) -> list[str]:
+    feature_dataset = _openmeteo_feature_selection_frame(dataset)
     openmeteo_columns = [
         column
-        for column in heat_risk_feature_columns(dataset, missing_threshold)
+        for column in heat_risk_feature_columns(feature_dataset, missing_threshold)
         if column.startswith("openmeteo_")
     ]
     return list(dict.fromkeys([*base_columns, *openmeteo_columns]))
+
+
+def openmeteo_daily_heat_risk_feature_columns(
+    dataset: pd.DataFrame,
+    base_columns: list[str],
+    missing_threshold: float = 1.0,
+) -> list[str]:
+    feature_dataset = _openmeteo_feature_selection_frame(dataset)
+    openmeteo_columns = [
+        column
+        for column in heat_risk_feature_columns(feature_dataset, missing_threshold)
+        if column.startswith("openmeteo_") and not column.startswith("openmeteo_hourly_")
+    ]
+    return list(dict.fromkeys([*base_columns, *openmeteo_columns]))
+
+
+def _openmeteo_feature_selection_frame(dataset: pd.DataFrame) -> pd.DataFrame:
+    mask = _openmeteo_available_mask(dataset)
+    available = dataset[mask]
+    return available if len(available) >= 100 else dataset
+
+
+def _openmeteo_available_mask(dataset: pd.DataFrame) -> pd.Series:
+    if "openmeteo_tmax_c" not in dataset:
+        return pd.Series(False, index=dataset.index)
+    return dataset["openmeteo_tmax_c"].notna()
 
 
 def _is_m1_feature(column: str) -> bool:
@@ -270,6 +318,12 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
         extended_columns,
         missing_threshold=config.feature_missing_threshold,
     )
+    openmeteo_daily_columns = openmeteo_daily_heat_risk_feature_columns(
+        train,
+        extended_columns,
+        missing_threshold=config.feature_missing_threshold,
+    )
+    openmeteo_all_columns = openmeteo_columns
     regressor = _regression_pipeline(config)
     regressor.fit(train[columns], train[TARGET_COLUMN])
 
@@ -277,10 +331,27 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
     m1_regressor.fit(train[extended_columns], train[TARGET_COLUMN])
 
     openmeteo_regressor = None
+    openmeteo_daily_regressor = None
+    selected_openmeteo_variant = None
+    openmeteo_train = train[_openmeteo_available_mask(train)]
+    openmeteo_test_mask = _openmeteo_available_mask(test)
+    openmeteo_test = test[openmeteo_test_mask]
     has_openmeteo_features = any(column.startswith("openmeteo_") for column in openmeteo_columns)
-    if has_openmeteo_features:
+    has_openmeteo_daily_features = any(
+        column.startswith("openmeteo_") for column in openmeteo_daily_columns
+    )
+    has_openmeteo_hourly_features = any(
+        column.startswith("openmeteo_hourly_") for column in openmeteo_columns
+    )
+    if has_openmeteo_daily_features and len(openmeteo_train) >= 100:
+        openmeteo_daily_regressor = _regression_pipeline(config)
+        openmeteo_daily_regressor.fit(
+            openmeteo_train[openmeteo_daily_columns],
+            openmeteo_train[TARGET_COLUMN],
+        )
+    if has_openmeteo_features and len(openmeteo_train) >= 100:
         openmeteo_regressor = _regression_pipeline(config)
-        openmeteo_regressor.fit(train[openmeteo_columns], train[TARGET_COLUMN])
+        openmeteo_regressor.fit(openmeteo_train[openmeteo_columns], openmeteo_train[TARGET_COLUMN])
 
     continuation_classifiers = {}
     for threshold in REMAINING_HEAT_THRESHOLDS_C:
@@ -384,15 +455,49 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
     m0_remaining_prediction = (
         two_stage_remaining_prediction if two_stage_mae <= direct_mae else direct_remaining_prediction
     )
+    openmeteo_daily_remaining_prediction = None
+    openmeteo_hourly_remaining_prediction = None
+    openmeteo_daily_eval_prediction = None
+    openmeteo_hourly_eval_prediction = None
     openmeteo_remaining_prediction = None
+    openmeteo_eval_prediction = None
+    openmeteo_daily_mae = None
+    openmeteo_hourly_mae = None
     openmeteo_mae = None
-    if openmeteo_regressor is not None:
-        openmeteo_remaining_prediction = _clip_remaining(
+    if openmeteo_daily_regressor is not None and not openmeteo_test.empty:
+        openmeteo_daily_remaining_prediction = _clip_remaining(
+            openmeteo_daily_regressor.predict(test[openmeteo_daily_columns])
+        )
+        openmeteo_daily_eval_prediction = _clip_remaining(
+            openmeteo_daily_regressor.predict(openmeteo_test[openmeteo_daily_columns])
+        )
+        openmeteo_daily_mae = float(
+            mean_absolute_error(openmeteo_test[TARGET_COLUMN], openmeteo_daily_eval_prediction)
+        )
+    if openmeteo_regressor is not None and not openmeteo_test.empty:
+        openmeteo_hourly_remaining_prediction = _clip_remaining(
             openmeteo_regressor.predict(test[openmeteo_columns])
         )
-        openmeteo_mae = float(
-            mean_absolute_error(test[TARGET_COLUMN], openmeteo_remaining_prediction)
+        openmeteo_hourly_eval_prediction = _clip_remaining(
+            openmeteo_regressor.predict(openmeteo_test[openmeteo_columns])
         )
+        openmeteo_hourly_mae = float(
+            mean_absolute_error(openmeteo_test[TARGET_COLUMN], openmeteo_hourly_eval_prediction)
+        )
+    if openmeteo_daily_mae is not None and (
+        openmeteo_hourly_mae is None or openmeteo_daily_mae < openmeteo_hourly_mae
+    ):
+        selected_openmeteo_variant = "daily"
+        openmeteo_mae = openmeteo_daily_mae
+        openmeteo_remaining_prediction = openmeteo_daily_remaining_prediction
+        openmeteo_eval_prediction = openmeteo_daily_eval_prediction
+        openmeteo_regressor = openmeteo_daily_regressor
+        openmeteo_columns = openmeteo_daily_columns
+    elif openmeteo_hourly_mae is not None:
+        selected_openmeteo_variant = "hourly" if has_openmeteo_hourly_features else "daily"
+        openmeteo_mae = openmeteo_hourly_mae
+        openmeteo_remaining_prediction = openmeteo_hourly_remaining_prediction
+        openmeteo_eval_prediction = openmeteo_hourly_eval_prediction
     m1_mae = float(mean_absolute_error(test[TARGET_COLUMN], m1_remaining_prediction))
     method_mae = {
         "direct": direct_mae,
@@ -437,11 +542,6 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
     m0_tmax_prediction = test["tmpc_max_to_cutoff"].to_numpy() + m0_remaining_prediction
     train_tmax_prediction = train["tmpc_max_to_cutoff"].to_numpy() + train_remaining_prediction
     m1_tmax_prediction = test["tmpc_max_to_cutoff"].to_numpy() + m1_remaining_prediction
-    openmeteo_tmax_prediction = (
-        test["tmpc_max_to_cutoff"].to_numpy() + openmeteo_remaining_prediction
-        if openmeteo_remaining_prediction is not None
-        else None
-    )
     underprediction_classifiers = _fit_underprediction_classifiers(
         config,
         train,
@@ -486,6 +586,9 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
         "two_stage_remaining_heat_mae_c": two_stage_mae,
         "m1_remaining_heat_mae_c": m1_mae,
         "openmeteo_remaining_heat_mae_c": openmeteo_mae,
+        "openmeteo_daily_remaining_heat_mae_c": openmeteo_daily_mae,
+        "openmeteo_hourly_remaining_heat_mae_c": openmeteo_hourly_mae,
+        "selected_openmeteo_variant": selected_openmeteo_variant,
         "selected_prediction_method": selected_prediction_method,
         "tmax_mae_c": float(mean_absolute_error(test[FINAL_TMAX_COLUMN], tmax_prediction)),
         "tmax_rmse_c": _rmse(test[FINAL_TMAX_COLUMN], tmax_prediction),
@@ -495,8 +598,35 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
             mean_absolute_error(test[FINAL_TMAX_COLUMN], m1_tmax_prediction)
         ),
         "openmeteo_tmax_mae_c": (
-            float(mean_absolute_error(test[FINAL_TMAX_COLUMN], openmeteo_tmax_prediction))
-            if openmeteo_tmax_prediction is not None
+            float(
+                mean_absolute_error(
+                    openmeteo_test[FINAL_TMAX_COLUMN],
+                    openmeteo_test["tmpc_max_to_cutoff"].to_numpy() + openmeteo_eval_prediction,
+                )
+            )
+            if openmeteo_eval_prediction is not None and not openmeteo_test.empty
+            else None
+        ),
+        "openmeteo_daily_tmax_mae_c": (
+            float(
+                mean_absolute_error(
+                    openmeteo_test[FINAL_TMAX_COLUMN],
+                    openmeteo_test["tmpc_max_to_cutoff"].to_numpy()
+                    + openmeteo_daily_eval_prediction,
+                )
+            )
+            if openmeteo_daily_eval_prediction is not None and not openmeteo_test.empty
+            else None
+        ),
+        "openmeteo_hourly_tmax_mae_c": (
+            float(
+                mean_absolute_error(
+                    openmeteo_test[FINAL_TMAX_COLUMN],
+                    openmeteo_test["tmpc_max_to_cutoff"].to_numpy()
+                    + openmeteo_hourly_eval_prediction,
+                )
+            )
+            if openmeteo_hourly_eval_prediction is not None and not openmeteo_test.empty
             else None
         ),
         "curve_predicted_tmax_mae_c": curve_metrics.get("curve_predicted_tmax_mae_c"),
@@ -514,6 +644,14 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
         "feature_count": len(columns),
         "extended_feature_count": len(extended_columns),
         "openmeteo_feature_count": len(openmeteo_columns) if has_openmeteo_features else 0,
+        "openmeteo_train_rows": int(len(openmeteo_train)),
+        "openmeteo_test_rows": int(len(openmeteo_test)),
+        "openmeteo_daily_feature_count": len(
+            [column for column in openmeteo_daily_columns if column.startswith("openmeteo_")]
+        ),
+        "openmeteo_hourly_feature_count": len(
+            [column for column in openmeteo_all_columns if column.startswith("openmeteo_hourly_")]
+        ),
         "feature_missing_threshold": config.feature_missing_threshold,
         "trained_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -610,6 +748,8 @@ def validate_heat_risk_model(config: ProjectConfig) -> dict:
     test["error_c"] = test["predicted_tmax_c"] - test[FINAL_TMAX_COLUMN]
     test["abs_error_c"] = test["error_c"].abs()
     test["curve_abs_error_c"] = (test["curve_predicted_tmax_c"] - test[FINAL_TMAX_COLUMN]).abs()
+    test["predicted_tmax_rounded_c"] = _round_half_up_celsius(test["predicted_tmax_c"])
+    test["actual_tmax_rounded_c"] = _round_half_up_celsius(test[FINAL_TMAX_COLUMN])
 
     report = {
         "summary": {
@@ -630,6 +770,7 @@ def validate_heat_risk_model(config: ProjectConfig) -> dict:
             "observed_max_baseline_mae_c": float(
                 mean_absolute_error(test[FINAL_TMAX_COLUMN], test["tmpc_max_to_cutoff"])
             ),
+            "integer_tmax_win_rates": _integer_tmax_win_rates(test),
         },
         "metrics_by_cutoff": _metrics_by_cutoff(test),
         "threshold_metrics": metrics["threshold_metrics"],
@@ -679,6 +820,20 @@ def predict_heat_risk(
     prediction_method_override: str | None = None,
 ) -> dict:
     cutoff_local = _normalize_cutoff(cutoff_local)
+    if not openmeteo_cache_has_date(
+        local_date,
+        history_json=config.openmeteo_history_json,
+        live_json_pattern=config.openmeteo_live_json_pattern,
+        history_csv=config.openmeteo_history_csv,
+        live_csv_pattern=config.openmeteo_live_csv_pattern,
+    ):
+        ensure_openmeteo_live_data(
+            config.openmeteo_live_json_pattern,
+            config.openmeteo_latitude,
+            config.openmeteo_longitude,
+            local_date,
+            timezone=config.openmeteo_timezone,
+        )
     bundle = _load_model_bundle(config.heat_risk_model_path)
     prediction_method = _resolve_prediction_method(bundle, prediction_method_override)
     columns = bundle["feature_columns"]
@@ -1293,6 +1448,38 @@ def _prediction_row(
     if match.empty:
         raise ValueError(f"No feature row found for {local_date} at cutoff {cutoff_local}.")
     return match.iloc[[0]]
+
+
+def _complete_observation_date_range(
+    observations: pd.DataFrame,
+    config: ProjectConfig,
+) -> tuple[str, str] | None:
+    if observations.empty or "valid_local" not in observations:
+        return None
+    data = observations.copy()
+    data["valid_local"] = pd.to_datetime(data["valid_local"])
+    data["local_date"] = data["valid_local"].dt.date.astype(str)
+    data["local_minutes"] = data["valid_local"].dt.hour * 60 + data["valid_local"].dt.minute
+    complete = (
+        data.groupby("local_date", as_index=False)
+        .agg(last_full_day_minute=("local_minutes", "max"))
+    )
+    complete = complete[complete["last_full_day_minute"] >= config.complete_day_min_minutes]
+    if complete.empty:
+        return None
+    return str(complete["local_date"].min()), str(complete["local_date"].max())
+
+
+def _openmeteo_training_date_range(
+    config: ProjectConfig,
+    observation_range: tuple[str, str],
+) -> tuple[str, str]:
+    start_date, end_date = observation_range
+    if config.openmeteo_training_start_date:
+        start_date = max(start_date, config.openmeteo_training_start_date)
+    if config.openmeteo_training_end_date:
+        end_date = min(end_date, config.openmeteo_training_end_date)
+    return start_date, end_date
 
 
 def _artifact_stem(config: ProjectConfig) -> str:
@@ -1937,6 +2124,7 @@ def _nearest_update_policy(cutoff_local: str, update_policy: dict) -> dict | Non
 def _metrics_by_cutoff(test: pd.DataFrame) -> list[dict]:
     output = []
     for cutoff, group in test.groupby("cutoff_local"):
+        integer_win_rates = _integer_tmax_win_rates(group)
         output.append(
             {
                 "cutoff_local": str(cutoff),
@@ -1949,9 +2137,63 @@ def _metrics_by_cutoff(test: pd.DataFrame) -> list[dict]:
                     mean_absolute_error(group[FINAL_TMAX_COLUMN], group["tmpc_max_to_cutoff"])
                 ),
                 "bias_c": float(np.mean(group["predicted_tmax_c"] - group[FINAL_TMAX_COLUMN])),
+                **integer_win_rates,
             }
         )
     return sorted(output, key=lambda row: _hhmm_to_minutes(row["cutoff_local"]))
+
+
+def _round_half_up_celsius(values: pd.Series | np.ndarray) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce")
+    if not isinstance(numeric, pd.Series):
+        numeric = pd.Series(numeric)
+    rounded = np.floor(numeric + 0.5)
+    return rounded.astype("Int64")
+
+
+def _integer_tmax_win_rates(test: pd.DataFrame) -> dict[str, int | float]:
+    frame = test.copy()
+    if "predicted_tmax_rounded_c" not in frame:
+        frame["predicted_tmax_rounded_c"] = _round_half_up_celsius(frame["predicted_tmax_c"])
+    if "actual_tmax_rounded_c" not in frame:
+        frame["actual_tmax_rounded_c"] = _round_half_up_celsius(frame[FINAL_TMAX_COLUMN])
+
+    valid = frame.dropna(subset=["predicted_tmax_rounded_c", "actual_tmax_rounded_c"])
+    n = int(len(valid))
+    if n == 0:
+        return {
+            "n": 0,
+            "tmax_win_count": 0,
+            "tmax_win_rate": 0.0,
+            "tmax_plus_1_win_count": 0,
+            "tmax_plus_1_win_rate": 0.0,
+            "tmax_minus_1_win_count": 0,
+            "tmax_minus_1_win_rate": 0.0,
+            "combined_tmax_minus_1_to_plus_1_win_count": 0,
+            "combined_tmax_minus_1_to_plus_1_win_rate": 0.0,
+        }
+
+    predicted = valid["predicted_tmax_rounded_c"].astype(int)
+    actual = valid["actual_tmax_rounded_c"].astype(int)
+    exact = predicted == actual
+    plus_1 = predicted + 1 == actual
+    minus_1 = predicted - 1 == actual
+    combined = exact | plus_1 | minus_1
+    exact_count = int(exact.sum())
+    plus_1_count = int(plus_1.sum())
+    minus_1_count = int(minus_1.sum())
+    combined_count = int(combined.sum())
+    return {
+        "n": n,
+        "tmax_win_count": exact_count,
+        "tmax_win_rate": exact_count / n,
+        "tmax_plus_1_win_count": plus_1_count,
+        "tmax_plus_1_win_rate": plus_1_count / n,
+        "tmax_minus_1_win_count": minus_1_count,
+        "tmax_minus_1_win_rate": minus_1_count / n,
+        "combined_tmax_minus_1_to_plus_1_win_count": combined_count,
+        "combined_tmax_minus_1_to_plus_1_win_rate": combined_count / n,
+    }
 
 
 def _top_heat_risk_errors(test: pd.DataFrame, n: int = 30) -> pd.DataFrame:

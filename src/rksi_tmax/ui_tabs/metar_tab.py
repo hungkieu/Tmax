@@ -35,32 +35,44 @@ def render(config: ProjectConfig, config_options: list[ConfigOption]) -> None:
         if not selected_stations:
             st.warning("Select at least one location.")
             return
-        with st.spinner("Fetching METAR..."):
-            result = metar_service.fetch_metar_for_stations(selected_stations, int(hours), metar_file)
-        st.success(f"Fetched {result['lines']} METAR lines.")
-        render_json("Fetch result", result)
+        try:
+            with st.spinner("Fetching METAR..."):
+                result = metar_service.fetch_metar_for_stations(selected_stations, int(hours), metar_file)
+        except Exception as exc:
+            _render_workflow_error("Fetch METAR failed", exc)
+        else:
+            st.success(f"Fetched {result['lines']} METAR lines.")
+            render_json("Fetch result", result)
 
     if selected_actions[1].button("Import + DB", use_container_width=True):
         if not selected_configs:
             st.warning("Select at least one location.")
             return
-        with st.spinner("Importing station-scoped METAR for selected locations..."):
-            result = metar_service.import_many_station_metars(
-                selected_configs,
-                metar_file,
-                reference_date,
-            )
-        st.success(f"Inserted {result['inserted']} rows across {len(selected_configs)} locations.")
-        render_json("Import result", result)
+        try:
+            with st.spinner("Importing station-scoped METAR for selected locations..."):
+                result = metar_service.import_many_station_metars(
+                    selected_configs,
+                    metar_file,
+                    reference_date,
+                )
+        except Exception as exc:
+            _render_workflow_error("Import METAR failed", exc)
+        else:
+            st.success(f"Inserted {result['inserted']} rows across {len(selected_configs)} locations.")
+            render_json("Import result", result)
 
     if selected_actions[2].button("Sync DuckDB", use_container_width=True):
         if not selected_configs:
             st.warning("Select at least one location.")
             return
-        with st.spinner("Syncing DuckDB for selected locations..."):
-            result = metar_service.sync_many_databases(selected_configs)
-        st.success(f"Synced {len(selected_configs)} location configs.")
-        render_json("Sync result", result)
+        try:
+            with st.spinner("Syncing DuckDB for selected locations..."):
+                result = metar_service.sync_many_databases(selected_configs)
+        except Exception as exc:
+            _render_workflow_error("Sync DuckDB failed", exc)
+        else:
+            st.success(f"Synced {len(selected_configs)} location configs.")
+            render_json("Sync result", result)
 
     st.divider()
     st.caption("Verification")
@@ -78,3 +90,15 @@ def render(config: ProjectConfig, config_options: list[ConfigOption]) -> None:
             render_json("Database status", status)
             if latest:
                 render_json("Latest observation", latest)
+
+
+def _render_workflow_error(title: str, exc: Exception) -> None:
+    st.error(f"{title}: {exc}")
+    message = str(exc)
+    if "HTTP Error 504" in message or "Gateway Time-out" in message:
+        st.info(
+            "The AviationWeather METAR API timed out. Retry in a few minutes, reduce lookback hours, "
+            "or use an existing METAR file and run Import + DB."
+        )
+    elif "No such file" in message or "cannot find the file" in message.lower():
+        st.info("Fetch METAR first, or enter a METAR file path that already exists.")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import os
 import subprocess
 import sys
@@ -7,21 +8,26 @@ from pathlib import Path
 
 import streamlit as st
 
-from rksi_tmax.services.config_service import (
-    delete_location_config,
-    discover_config_options,
-    load_selected_config,
-    summarize_config,
-)
+from rksi_tmax import config as config_module
+from rksi_tmax.services import config_service
 from rksi_tmax.ui_components import render_json
-from rksi_tmax.ui_tabs import location_tab, metar_tab, predict_tab, train_tab
+from rksi_tmax.ui_tabs import (
+    create_location_tab,
+    location_tab,
+    metar_tab,
+    next_metar_tab,
+    predict_tab,
+    train_tab,
+)
 
 
 def main() -> None:
+    importlib.reload(config_module)
+    importlib.reload(config_service)
     st.set_page_config(page_title="RKSI Tmax Dashboard", layout="wide")
     st.title("Tmax Operations")
 
-    options = discover_config_options()
+    options = config_service.discover_config_options()
     if not options:
         st.error("No YAML configs found in configs/.")
         return
@@ -29,13 +35,13 @@ def main() -> None:
     labels = [option.label for option in options]
     selected_label = st.sidebar.selectbox("Location config", labels)
     selected = options[labels.index(selected_label)]
-    config = load_selected_config(selected.path)
+    config = config_service.load_selected_config(selected.path)
 
     st.sidebar.caption(f"Station: {config.station}")
     st.sidebar.caption(f"Timezone: {config.timezone}")
     st.sidebar.caption(f"Config: {selected.path}")
     with st.sidebar.expander("Config summary"):
-        st.json(summarize_config(config, selected.path))
+        st.json(config_service.summarize_config(config, selected.path))
     with st.sidebar.expander("Delete location config"):
         st.caption("Deletes only the YAML config. CSV, DuckDB, and model artifacts are kept.")
         confirmation = st.text_input(
@@ -44,26 +50,46 @@ def main() -> None:
         )
         if st.button("Delete selected config", type="secondary", use_container_width=True):
             try:
-                result = delete_location_config(selected.path, confirmation)
+                result = config_service.delete_location_config(selected.path, confirmation)
             except Exception as exc:
                 st.error(str(exc))
             else:
                 st.success(f"Deleted {result['station']} config.")
                 st.rerun()
 
-    locations, metar, train, predict = st.tabs(
-        ["Locations", "METAR", "Train / Validate", "Predict"]
-    )
-    with locations:
-        location_tab.render(options)
-    with metar:
-        metar_tab.render(config, options)
-    with train:
-        train_tab.render(config)
-    with predict:
-        predict_tab.render(config)
+    def operations_page() -> None:
+        from rksi_tmax.next_metar_temp import SUPPORTED_STATIONS
 
-    render_json("Active config", summarize_config(config, selected.path))
+        show_next_metar = config.station.upper() in SUPPORTED_STATIONS
+        base_labels = ["Locations", "METAR", "Train / Validate", "Predict"]
+        labels = (["Next-METAR"] + base_labels) if show_next_metar else base_labels
+        tabs = st.tabs(labels)
+        tab_by_label = dict(zip(labels, tabs))
+
+        if show_next_metar:
+            with tab_by_label["Next-METAR"]:
+                importlib.reload(next_metar_tab)
+                next_metar_tab.render(config.station)
+        with tab_by_label["Locations"]:
+            importlib.reload(location_tab)
+            location_tab.render(options, config, selected.path)
+        with tab_by_label["METAR"]:
+            metar_tab.render(config, options)
+        with tab_by_label["Train / Validate"]:
+            train_tab.render(config)
+        with tab_by_label["Predict"]:
+            predict_tab.render(config)
+        render_json("Active config", config_service.summarize_config(config, selected.path))
+
+    def create_location_page() -> None:
+        importlib.reload(create_location_tab)
+        create_location_tab.render()
+
+    pages = [
+        st.Page(operations_page, title="Operations", url_path="operations", default=True),
+        st.Page(create_location_page, title="Create Location", url_path="create-location"),
+    ]
+    st.navigation(pages).run()
 
 
 def run() -> None:

@@ -13,8 +13,8 @@ The operational forecast answers:
 - whether the next cutoff update is worth running.
 
 `predicted_tmax_c` is the operational forecast from the method selected by
-validation. RKSI can also use Open-Meteo daily forecast features; reports show
-both the raw Open-Meteo Tmax and the M3 corrected Tmax when available. Thermal
+validation. Locations with Open-Meteo coordinates can use M3 API forecast
+features; reports show both the raw Open-Meteo Tmax and the M3 corrected Tmax when available. Thermal
 phase, late-warming risk, and the future curve are supporting context.
 
 ## Table Of Contents
@@ -72,27 +72,35 @@ uv run rksi-ui
 Historical source CSV files are expected at:
 
 ```text
-asos.csv
-RJTT.csv
-WSSS.csv
+data/rksi/asos.csv
+data/rkpk/asos.csv
+data/rjtt/RJTT.csv
+data/wsss/WSSS.csv
 ```
 
 Live/manual METAR lines go in:
 
 ```text
-metar.txt
+data/shared/metar.txt
 ```
 
 Runtime reads prefer DuckDB when available:
 
 ```text
-artifacts/observations.duckdb
+artifacts/shared/observations.duckdb
 ```
 
 Rebuild DuckDB from configured raw CSV files:
 
 ```powershell
 uv run rksi-sync-duckdb
+```
+
+Prepare Open-Meteo M3 API cache when a location has coordinates configured:
+
+```powershell
+uv run rksi-fetch-openmeteo --config configs/default.yaml --mode training
+uv run rksi-fetch-openmeteo --config configs/default.yaml --mode daily --date 2026-06-21
 ```
 
 ### Cutoff Time
@@ -184,9 +192,9 @@ uv run rksi-ui
 
 The UI lets you choose a YAML config/location, then use three tabs:
 
-- `Locations`: create a new station YAML config and optional empty ASOS CSV header.
+- `Locations`: create a new station YAML config, optional empty ASOS CSV header, and Open-Meteo API coordinates/cache paths.
 - `METAR`: fetch station METAR, import station-scoped rows, sync DuckDB, and verify latest observations.
-- `Train / Validate`: build the heat-risk dataset, train, validate, and inspect metrics/artifacts.
+- `Train / Validate`: prepare Open-Meteo M3 cache, build the heat-risk dataset, train, validate, and inspect metrics/artifacts.
 - `Predict`: choose latest database observation, config default cutoff, or a custom cutoff; choose Auto/M1/M3 when supported; optionally enter a bet temperature and generate the explanation/plot.
 
 The sidebar also has a `Delete location config` expander. It deletes only the selected YAML config after station-code confirmation; CSV, DuckDB rows, and model artifacts are kept.
@@ -198,13 +206,13 @@ Implementation context for future UI edits is in `docs/ui-dashboard-context.md`.
 Generate the combined report locally:
 
 ```powershell
-uv run rksi-telegram-report --output artifacts/telegram_report.md --hours 4
+uv run rksi-telegram-report --output artifacts/shared/telegram_report.md --hours 4
 ```
 
 Send the report to Telegram:
 
 ```powershell
-node scripts/send_telegram_report.mjs artifacts/telegram_report.md
+node scripts/send_telegram_report.mjs artifacts/shared/telegram_report.md
 ```
 
 Required environment variables:
@@ -229,6 +237,10 @@ uv run rksi-predict-heat-risk --config configs/default.yaml --date 2026-06-20 --
 ```
 
 Use station-specific config paths for other stations.
+
+For retraining an existing station after adding historical data, changing
+config, or updating Open-Meteo M3 cache, see
+[Retraining An Existing Location](docs/configuration.md#retraining-an-existing-location).
 
 ## Documentation
 

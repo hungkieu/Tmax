@@ -62,7 +62,7 @@ class ParsedMetar:
 
 def import_metar_file(
     metar_path: str | Path = "metar.txt",
-    csv_path: str | Path = "asos.csv",
+    csv_path: str | Path = "data/rksi/asos.csv",
     reference_date: str | date | None = None,
     db_path: str | Path | None = None,
 ) -> dict:
