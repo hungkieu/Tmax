@@ -27,6 +27,23 @@ def openmeteo_status(config: ProjectConfig) -> dict[str, object]:
     }
 
 
+def openmeteo_daily_status(config: ProjectConfig, local_date: str) -> dict[str, object]:
+    path = (
+        Path(config.openmeteo_live_json_pattern.format(date=local_date))
+        if config.openmeteo_live_json_pattern
+        else None
+    )
+    return {
+        "configured": config.openmeteo_live_json_pattern is not None
+        and config.openmeteo_latitude is not None
+        and config.openmeteo_longitude is not None,
+        "date": local_date,
+        "output_path": str(path) if path else None,
+        "exists": bool(path and path.exists()),
+        "size_bytes": path.stat().st_size if path and path.exists() else None,
+    }
+
+
 def prepare_openmeteo_training_data(
     config: ProjectConfig,
     force: bool = False,
@@ -62,6 +79,7 @@ def prepare_openmeteo_daily_data(
     local_date: str,
     force: bool = False,
 ) -> dict[str, object]:
+    before = openmeteo_daily_status(config, local_date)
     result = ensure_openmeteo_live_data(
         config.openmeteo_live_json_pattern,
         config.openmeteo_latitude,
@@ -72,6 +90,11 @@ def prepare_openmeteo_daily_data(
     )
     if result is None:
         raise ValueError("Open-Meteo API is not configured for this location.")
+    after = openmeteo_daily_status(config, local_date)
+    result["file_existed_before"] = before["exists"]
+    result["file_exists_after"] = after["exists"]
+    result["created_new_file"] = bool(after["exists"] and not before["exists"])
+    result["size_bytes"] = after["size_bytes"]
     return result
 
 

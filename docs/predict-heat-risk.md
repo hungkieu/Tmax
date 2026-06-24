@@ -243,7 +243,7 @@ Example output:
 - `predicted_tmax_c`: operational final Tmax forecast from the selected
   validation method. The future-curve model still does not override this field.
 - `prediction_method`: selected operational method from validation. It can be
-  `direct`, `two_stage`, `m1`, or `openmeteo`.
+  `direct`, `two_stage`, `m1`, `openmeteo`, or `m4`.
 - `openmeteo_forecast_tmax_c`: raw daily Tmax forecast from the configured
   Open-Meteo API cache, when available for the forecast date.
 - `openmeteo_predicted_tmax_c`: M3 output after combining Open-Meteo features

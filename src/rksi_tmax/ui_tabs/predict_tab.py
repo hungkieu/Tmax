@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
 import streamlit as st
 
@@ -56,18 +57,18 @@ def render(config: ProjectConfig) -> None:
                 make_plot=make_plot,
                 prediction_method=selected_method,
             )
-        render_status_metrics(
-            {
-                "Predicted Tmax C": result.get("predicted_tmax_c"),
-                "Observed max C": result.get("observed_max_to_cutoff_c"),
-                "Remaining heat C": result.get("predicted_remaining_heat_c"),
-                "Method": result.get("prediction_method"),
-                "Selected": result.get("selected_prediction_method"),
-            }
-        )
-        st.text(result["explanation"])
+        render_status_metrics(_prediction_status_metrics(result))
+        if result.get("prediction_method") == "m4":
+            from rksi_tmax.heat_risk import format_m4_brief_explanation
+
+            st.text(format_m4_brief_explanation(result))
+            with st.expander("Giải thích đầy đủ (mọi layer)"):
+                st.text(result["explanation"])
+        else:
+            st.text(result["explanation"])
         render_plot(result.get("plot_path"))
-        render_json("Prediction JSON", result)
+        render_json("Selected Model Report", _selected_model_report(result))
+        render_json("Full Prediction JSON (debug)", result)
 
 
 def _available_prediction_methods(config: ProjectConfig) -> list[dict[str, str]]:
@@ -93,3 +94,49 @@ def _prediction_methods_for_path(
 
     config = ProjectConfig(heat_risk_model_path=Path(model_path))
     return prediction_service.available_prediction_methods(config)
+
+
+def _prediction_status_metrics(result: dict[str, Any]) -> dict[str, Any]:
+    items: dict[str, Any] = {
+        "Predicted Tmax C": result.get("predicted_tmax_c"),
+        "Observed max C": result.get("observed_max_to_cutoff_c"),
+        "Remaining heat C": result.get("predicted_remaining_heat_c"),
+        "Method": result.get("prediction_method"),
+    }
+    method = result.get("prediction_method")
+    if method == "m4":
+        items["M4 top expert"] = result.get("m4_top_expert")
+    return items
+
+
+def _selected_model_report(result: dict[str, Any]) -> dict[str, Any]:
+    base = {
+        "station": result.get("station"),
+        "local_date": result.get("local_date"),
+        "cutoff_local": result.get("cutoff_local"),
+        "last_observation_local": result.get("last_observation_local"),
+        "observed_max_to_cutoff_c": result.get("observed_max_to_cutoff_c"),
+        "predicted_remaining_heat_c": result.get("predicted_remaining_heat_c"),
+        "predicted_tmax_c": result.get("predicted_tmax_c"),
+        "prediction_method": result.get("prediction_method"),
+    }
+    method = result.get("prediction_method")
+    if method == "m4":
+        return {
+            **base,
+            "m4_predicted_remaining_heat_c": result.get("m4_predicted_remaining_heat_c"),
+            "m4_predicted_tmax_c": result.get("m4_predicted_tmax_c"),
+            "m4_top_expert": result.get("m4_top_expert"),
+            "m4_expert_weights": result.get("m4_expert_weights"),
+            "openmeteo_forecast_tmax_c": result.get("openmeteo_forecast_tmax_c"),
+            "openmeteo_expected_remaining_heat_c": result.get("openmeteo_expected_remaining_heat_c"),
+        }
+    if method == "openmeteo":
+        return {
+            **base,
+            "openmeteo_predicted_remaining_heat_c": result.get("openmeteo_predicted_remaining_heat_c"),
+            "openmeteo_predicted_tmax_c": result.get("openmeteo_predicted_tmax_c"),
+            "openmeteo_forecast_tmax_c": result.get("openmeteo_forecast_tmax_c"),
+            "openmeteo_expected_remaining_heat_c": result.get("openmeteo_expected_remaining_heat_c"),
+        }
+    return base

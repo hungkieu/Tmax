@@ -106,7 +106,9 @@ def fetch_openmeteo_main() -> None:
         "--mode",
         choices=["training", "daily"],
         default="training",
-        help="training fetches historical forecast range from observations; daily fetches one forecast date.",
+        help=(
+            "training fetches historical forecast range; daily fetches one forecast date."
+        ),
     )
     parser.add_argument("--date", help="Local date YYYY-MM-DD for --mode daily.")
     parser.add_argument("--force", action="store_true", help="Refresh cache even if a file already exists.")
@@ -115,7 +117,7 @@ def fetch_openmeteo_main() -> None:
     config = load_config(args.config)
     if args.mode == "daily":
         if not args.date:
-            parser.error("--date is required for --mode daily")
+            parser.error("--date is required for daily mode")
         result = prepare_openmeteo_daily_data(config, args.date, force=args.force)
     else:
         result = prepare_openmeteo_training_data(config, force=args.force)
@@ -168,7 +170,7 @@ def predict_heat_risk_main() -> None:
     )
     parser.add_argument(
         "--prediction-method",
-        choices=["auto", "direct", "two_stage", "m1", "m3", "openmeteo"],
+        choices=["auto", "direct", "two_stage", "m1", "m3", "openmeteo", "m4"],
         default="auto",
         help="Override forecast method. M3/Open-Meteo only works for supported model bundles.",
     )
@@ -435,7 +437,7 @@ def station_shortcut_main(config_path: str) -> None:
     )
     parser.add_argument(
         "--prediction-method",
-        choices=["auto", "direct", "two_stage", "m1", "m3", "openmeteo"],
+        choices=["auto", "direct", "two_stage", "m1", "m3", "openmeteo", "m4"],
         default="auto",
         help="Override forecast method. M3/Open-Meteo only works for supported model bundles.",
     )

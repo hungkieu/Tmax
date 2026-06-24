@@ -66,6 +66,9 @@ def _render_metric_summary(metrics: dict[str, object]) -> None:
         "openmeteo_tmax_mae_c",
         "openmeteo_daily_tmax_mae_c",
         "openmeteo_hourly_tmax_mae_c",
+        "m4_tmax_mae_c",
+        "m4_remaining_heat_mae_c",
+        "m4_oof_fold_count",
         "selected_openmeteo_variant",
         "m0_heat_risk_tmax_mae_c",
     ]
@@ -136,6 +139,8 @@ def _render_openmeteo_controls(config: ProjectConfig) -> None:
         render_json("Open-Meteo config", status)
         force = st.checkbox("Refresh Open-Meteo cache", value=False)
         daily_date = st.date_input("Forecast date", value=date.today(), key=f"{config.station}-openmeteo-date")
+        daily_status = training_service.openmeteo_daily_status(config, daily_date.isoformat())
+        _render_daily_cache_status("Daily forecast file", daily_status)
         columns = st.columns(2)
         if columns[0].button("Prepare training data", use_container_width=True):
             try:
@@ -157,8 +162,31 @@ def _render_openmeteo_controls(config: ProjectConfig) -> None:
             except Exception as exc:
                 _render_workflow_error("Open-Meteo daily forecast failed", exc)
             else:
-                st.success("Open-Meteo daily cache ready.")
+                _render_daily_prepare_result("Open-Meteo daily forecast", result)
                 render_json("Open-Meteo daily result", result)
+
+
+def _render_daily_cache_status(title: str, status: dict[str, object]) -> None:
+    render_status_metrics(
+        {
+            f"{title} exists": "yes" if status.get("exists") else "no",
+            f"{title} path": status.get("output_path"),
+            f"{title} size bytes": status.get("size_bytes"),
+        }
+    )
+    if status.get("exists"):
+        st.info(f"{title} already exists: {status.get('output_path')}")
+    else:
+        st.warning(f"{title} does not exist yet: {status.get('output_path')}")
+
+
+def _render_daily_prepare_result(title: str, result: dict[str, object]) -> None:
+    if result.get("created_new_file"):
+        st.success(f"{title}: created new file successfully.")
+    elif result.get("fetched"):
+        st.success(f"{title}: refreshed existing file successfully.")
+    else:
+        st.info(f"{title}: file already existed; no new file was created.")
 
 
 def _render_workflow_error(title: str, exc: Exception) -> None:

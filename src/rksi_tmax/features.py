@@ -207,6 +207,8 @@ def _phase_plateau_features(morning: pd.DataFrame, cutoff_minutes: int) -> pd.Da
         last = group.iloc[-1]
         last_temp = float(last["tmpc"])
         max_temp = float(group["tmpc"].max())
+        temp_at_06 = _temp_at_or_before(group, 6 * 60)
+        temp_06_available = int((group["local_minutes"] <= 6 * 60).any())
         max_rows = group[np.isclose(group["tmpc"], max_temp, atol=0.05)]
         latest_max_minute = int(max_rows["local_minutes"].max())
         last_2h = group[group["local_minutes"] >= cutoff_minutes - 120]
@@ -221,6 +223,10 @@ def _phase_plateau_features(morning: pd.DataFrame, cutoff_minutes: int) -> pd.Da
             "temp_range_last_2h": float(last_2h["tmpc"].max() - last_2h["tmpc"].min()),
             "temp_std_last_2h": float(last_2h["tmpc"].std(ddof=0)) if len(last_2h) > 1 else 0.0,
             "temp_flat_duration_last_2h": _flat_duration_minutes(last_2h, last_temp),
+            "tmpc_at_or_before_06": temp_at_06,
+            "temp_06_observation_available": temp_06_available,
+            "temp_rise_since_06_c": last_temp - temp_at_06,
+            "observed_max_gain_since_06_c": max_temp - temp_at_06,
         }
         for minutes in (30, 60, 90, 120):
             row[f"temp_rise_last_{minutes}m"] = last_temp - _temp_at_or_before(

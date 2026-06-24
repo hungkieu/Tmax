@@ -194,7 +194,7 @@ Options:
 | Option | Meaning |
 |---|---|
 | `--config PATH` | Station config with Open-Meteo coordinates/cache paths. |
-| `--mode training,daily` | Training fetches the completed observation range; daily fetches one date. |
+| `--mode training,daily` | Training mode fetches the completed observation range; daily fetches one date. |
 | `--date YYYY-MM-DD` | Required for `--mode daily`. |
 | `--force` | Refresh the cache even when a usable file exists. |
 
@@ -261,6 +261,7 @@ uv run rksi-predict-heat-risk --config configs/default.yaml --date 2026-06-20 --
 uv run rksi-predict-heat-risk --config configs/default.yaml --date 2026-06-20 --cutoff-local 11:00 --plot --explain
 uv run rksi-predict-heat-risk --config configs/default.yaml --date 2026-06-20 --cutoff-local 11:00 --plot artifacts/rksi/rksi_2026-06-20_1100.png
 uv run rksi-predict-heat-risk --config configs/default.yaml --date 2026-06-20 --cutoff-local 11:00 --bet-temp-c 29
+uv run rksi-predict-heat-risk --config configs/default.yaml --date 2026-06-20 --cutoff-local 11:00 --prediction-method m4
 ```
 
 Options:
@@ -272,6 +273,7 @@ Options:
 | `--cutoff-local HH:MM` | Required. Cutoff in station local time. |
 | `--dataset PATH` | Optional existing heat-risk parquet to search before live feature build. |
 | `--bet-temp-c C` | Estimate win probability for betting that `C` is not today's final Tmax. |
+| `--prediction-method auto,direct,two_stage,m1,m3,openmeteo,m4` | Override validation-selected method. `m3` is an alias for Open-Meteo M3. |
 | `--plot [PATH]` | Write chart. Omit path for default `artifacts/{station}/{station}_{date}_{cutoff}_temperature_curve.png`. |
 | `--explain` | Print Vietnamese explanation after JSON. |
 

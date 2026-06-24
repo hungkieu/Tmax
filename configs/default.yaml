@@ -24,11 +24,14 @@ openmeteo_timezone: GMT
 openmeteo_training_start_date: 2023-01-01
 
 heat_risk_cutoffs:
-  - "09:00"
-  - "10:00"
-  - "11:00"
-  - "12:00"
-  - "13:00"
+- "09:00"
+- "10:00"
+- "11:00"
+- "12:00"
+- "13:00"
+- "14:00"
+- "15:00"
+- "16:00"
 heat_risk_thresholds_c:
   - 27.0
   - 28.0

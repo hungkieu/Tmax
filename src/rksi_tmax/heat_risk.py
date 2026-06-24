@@ -76,6 +76,20 @@ THERMAL_PHASE_LABELS = (
     "post_peak_decline",
     "uncertain_transition",
 )
+M4_EXPERT_NAMES = ("A", "B", "C", "D", "E", "F", "G")
+M4_MIN_TRAIN_ROWS = 100
+M4_DEFAULT_FOLD_COUNT = 3
+M4_REGRESSOR_MAX_ITER = 180
+M4_GATE_MAX_ITER = 120
+M4_EXPERT_LABELS = {
+    "A": "far_from_peak_remaining_heat",
+    "B": "morning_ramp_transition",
+    "C": "near_peak_observed_max_baseline",
+    "D": "forecast_disagreement",
+    "E": "low_cloud_fog_br",
+    "F": "strong_wind_regime",
+    "G": "openmeteo_evaluator",
+}
 M1_FEATURE_PREFIXES = (
     "temp_rise_",
     "last_temp_equals_observed_max",
@@ -236,7 +250,8 @@ def m0_heat_risk_feature_columns(
     return [
         column
         for column in heat_risk_feature_columns(dataset, missing_threshold)
-        if not _is_m1_feature(column) and not _is_openmeteo_feature(column)
+        if not _is_m1_feature(column)
+        and not _is_openmeteo_feature(column)
     ]
 
 
@@ -289,6 +304,74 @@ def _openmeteo_available_mask(dataset: pd.DataFrame) -> pd.Series:
     if "openmeteo_tmax_c" not in dataset:
         return pd.Series(False, index=dataset.index)
     return dataset["openmeteo_tmax_c"].notna()
+
+
+def _m4_expert_columns(
+    expert_name: str,
+    extended_columns: list[str],
+    openmeteo_columns: list[str],
+) -> list[str]:
+    if expert_name in {"D", "G"} and openmeteo_columns:
+        return openmeteo_columns
+    if openmeteo_columns:
+        return openmeteo_columns
+    return extended_columns
+
+
+def _m4_expert_columns_by_name(
+    extended_columns: list[str],
+    openmeteo_columns: list[str],
+) -> dict[str, list[str]]:
+    return {
+        name: _m4_expert_columns(name, extended_columns, openmeteo_columns)
+        for name in M4_EXPERT_NAMES
+    }
+
+
+def _m4_gating_feature_columns(dataset: pd.DataFrame, expert_names: tuple[str, ...] = M4_EXPERT_NAMES) -> list[str]:
+    preferred = [
+        "cutoff_minutes",
+        "tmpc_last_to_cutoff",
+        "tmpc_max_to_cutoff",
+        "temp_rise_last_60m",
+        "temp_rise_last_120m",
+        "temp_rise_since_06_c",
+        "minutes_since_observed_max",
+        "last_temp_equals_observed_max",
+        "observed_max_is_latest_observation",
+        "cutoff_minutes_before_monthly_median_tmax_time",
+        "cutoff_before_typical_peak",
+        "temp_flat_duration_last_2h",
+        "temp_range_last_2h",
+        "weather_suppression_score",
+        "fog_observed_to_cutoff",
+        "fog_cleared_to_cutoff",
+        "fog_developed_to_cutoff",
+        "low_cloud_seen_last_2h",
+        "visibility_low_last_2h",
+        "mvfr_or_worse_last_2h",
+        "wind_regime_e_last_to_cutoff",
+        "wind_regime_w_last_to_cutoff",
+        "drct_last_to_cutoff",
+        "sknt_last_to_cutoff",
+        "openmeteo_tmax_c",
+        "openmeteo_expected_remaining_heat_c",
+        "openmeteo_tmax_minus_observed_max_c",
+        "openmeteo_tmax_minus_last_temp_c",
+        "openmeteo_tmax_minus_climo_c",
+        "openmeteo_hourly_temp_peak_hour",
+        "openmeteo_hourly_cloud_cover_mean_pct",
+        "openmeteo_hourly_precipitation_probability_max_pct",
+        "regime_break_score",
+        "today_vs_last3_tmax_delta_c",
+    ]
+    expert_prediction_columns = [f"m4_expert_{name}_remaining_heat_c" for name in expert_names]
+    columns = [
+        column
+        for column in [*preferred, *expert_prediction_columns]
+        if column in dataset.columns and pd.api.types.is_numeric_dtype(dataset[column])
+    ]
+    return list(dict.fromkeys(columns))
 
 
 def _is_m1_feature(column: str) -> bool:
@@ -505,6 +588,17 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
         openmeteo_mae = openmeteo_hourly_mae
         openmeteo_remaining_prediction = openmeteo_hourly_remaining_prediction
         openmeteo_eval_prediction = openmeteo_hourly_eval_prediction
+    m4_result = _train_m4_model(
+        config,
+        train,
+        test,
+        extended_columns,
+        openmeteo_columns,
+    )
+    m4_remaining_prediction = m4_result["test_prediction"]
+    m4_train_remaining_prediction = m4_result["train_prediction"]
+    m4_metrics = m4_result["metrics"]
+    m4_mae = m4_metrics.get("m4_remaining_heat_mae_c")
     m1_mae = float(mean_absolute_error(test[TARGET_COLUMN], m1_remaining_prediction))
     method_mae = {
         "direct": direct_mae,
@@ -513,6 +607,8 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
     }
     if openmeteo_mae is not None:
         method_mae["openmeteo"] = openmeteo_mae
+    if m4_mae is not None:
+        method_mae["m4"] = m4_mae
     selected_prediction_method = min(method_mae, key=method_mae.get)
     if selected_prediction_method == "two_stage":
         remaining_prediction = two_stage_remaining_prediction
@@ -520,6 +616,8 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
         remaining_prediction = m1_remaining_prediction
     elif selected_prediction_method == "openmeteo" and openmeteo_remaining_prediction is not None:
         remaining_prediction = openmeteo_remaining_prediction
+    elif selected_prediction_method == "m4" and m4_remaining_prediction is not None:
+        remaining_prediction = m4_remaining_prediction
     else:
         remaining_prediction = direct_remaining_prediction
     train_direct_remaining_prediction = _clip_remaining(regressor.predict(train[columns]))
@@ -545,6 +643,8 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
         train_remaining_prediction = _clip_remaining(
             openmeteo_regressor.predict(train[openmeteo_columns])
         )
+    if selected_prediction_method == "m4" and m4_train_remaining_prediction is not None:
+        train_remaining_prediction = m4_train_remaining_prediction
     tmax_prediction = test["tmpc_max_to_cutoff"].to_numpy() + remaining_prediction
     m0_tmax_prediction = test["tmpc_max_to_cutoff"].to_numpy() + m0_remaining_prediction
     train_tmax_prediction = train["tmpc_max_to_cutoff"].to_numpy() + train_remaining_prediction
@@ -575,7 +675,6 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
         underprediction_probabilities,
         tmax_prediction,
     )
-
     metrics = {
         "station": config.station,
         "target": TARGET_COLUMN,
@@ -595,6 +694,11 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
         "openmeteo_remaining_heat_mae_c": openmeteo_mae,
         "openmeteo_daily_remaining_heat_mae_c": openmeteo_daily_mae,
         "openmeteo_hourly_remaining_heat_mae_c": openmeteo_hourly_mae,
+        "m4_remaining_heat_mae_c": m4_metrics.get("m4_remaining_heat_mae_c"),
+        "m4_tmax_mae_c": m4_metrics.get("m4_tmax_mae_c"),
+        "m4_expert_mae_c": m4_metrics.get("m4_expert_mae_c", {}),
+        "m4_gate_top_expert_rates": m4_metrics.get("m4_gate_top_expert_rates", {}),
+        "m4_oof_fold_count": m4_result["oof_fold_count"],
         "selected_openmeteo_variant": selected_openmeteo_variant,
         "selected_prediction_method": selected_prediction_method,
         "tmax_mae_c": float(mean_absolute_error(test[FINAL_TMAX_COLUMN], tmax_prediction)),
@@ -669,6 +773,11 @@ def train_heat_risk_model(config: ProjectConfig) -> dict:
             "regressor": regressor,
             "m1_regressor": m1_regressor,
             "openmeteo_regressor": openmeteo_regressor,
+            "m4_experts": m4_result["experts"],
+            "m4_expert_columns": m4_result["expert_columns"],
+            "m4_gating_model": m4_result["gating_model"],
+            "m4_gating_columns": m4_result["gating_columns"],
+            "m4_expert_names": m4_result["expert_names"],
             "conditional_regressor": conditional_regressor,
             "classifiers": classifiers,
             "continuation_classifiers": continuation_classifiers,
@@ -736,12 +845,18 @@ def validate_heat_risk_model(config: ProjectConfig) -> dict:
         if bundle.get("openmeteo_regressor") is not None and openmeteo_columns
         else None
     )
+    m4_remaining_prediction, m4_weights = _m4_predict_remaining_heat_and_weights(bundle, test)
     tmax_prediction = test["tmpc_max_to_cutoff"].to_numpy() + remaining_prediction
     m0_tmax_prediction = test["tmpc_max_to_cutoff"].to_numpy() + m0_remaining_prediction
     m1_tmax_prediction = test["tmpc_max_to_cutoff"].to_numpy() + m1_remaining_prediction
     openmeteo_tmax_prediction = (
         test["tmpc_max_to_cutoff"].to_numpy() + openmeteo_remaining_prediction
         if openmeteo_remaining_prediction is not None
+        else np.full(len(test), np.nan)
+    )
+    m4_tmax_prediction = (
+        test["tmpc_max_to_cutoff"].to_numpy() + m4_remaining_prediction
+        if m4_remaining_prediction is not None
         else np.full(len(test), np.nan)
     )
     curve_predictions = _curve_predictions(bundle.get("curve_models", {}), test[extended_columns])
@@ -751,6 +866,12 @@ def validate_heat_risk_model(config: ProjectConfig) -> dict:
     test["m0_predicted_tmax_c"] = m0_tmax_prediction
     test["m1_predicted_tmax_c"] = m1_tmax_prediction
     test["openmeteo_predicted_tmax_c"] = openmeteo_tmax_prediction
+    test["m4_predicted_remaining_heat_c"] = (
+        m4_remaining_prediction if m4_remaining_prediction is not None else np.full(len(test), np.nan)
+    )
+    test["m4_predicted_tmax_c"] = m4_tmax_prediction
+    if m4_weights is not None:
+        test["m4_top_expert"] = m4_weights.idxmax(axis=1).to_numpy()
     test["curve_predicted_tmax_c"] = curve_tmax_prediction
     test["error_c"] = test["predicted_tmax_c"] - test[FINAL_TMAX_COLUMN]
     test["abs_error_c"] = test["error_c"].abs()
@@ -774,6 +895,10 @@ def validate_heat_risk_model(config: ProjectConfig) -> dict:
             "m0_heat_risk_tmax_mae_c": metrics.get("m0_heat_risk_tmax_mae_c"),
             "openmeteo_tmax_mae_c": metrics.get("openmeteo_tmax_mae_c"),
             "openmeteo_feature_count": metrics.get("openmeteo_feature_count", 0),
+            "m4_tmax_mae_c": metrics.get("m4_tmax_mae_c"),
+            "m4_remaining_heat_mae_c": metrics.get("m4_remaining_heat_mae_c"),
+            "m4_oof_fold_count": metrics.get("m4_oof_fold_count", 0),
+            "m4_gate_top_expert_rates": metrics.get("m4_gate_top_expert_rates", {}),
             "observed_max_baseline_mae_c": float(
                 mean_absolute_error(test[FINAL_TMAX_COLUMN], test["tmpc_max_to_cutoff"])
             ),
@@ -786,6 +911,7 @@ def validate_heat_risk_model(config: ProjectConfig) -> dict:
         "interval_calibration": metrics["interval_calibration"],
         "interval_coverage": _interval_coverage(test, tmax_prediction, metrics["interval_calibration"]),
         "model_comparison": _model_comparison(test),
+        "m4_expert_weights_by_cutoff": _m4_weight_summary_by_cutoff(test, m4_weights),
         "phase_metrics": metrics.get("phase_metrics", {}),
         "curve_metrics": _curve_metrics(test, curve_predictions, curve_tmax_prediction),
         "late_warming_metrics": metrics.get("late_warming_metrics", {}),
@@ -827,6 +953,7 @@ def predict_heat_risk(
     prediction_method_override: str | None = None,
 ) -> dict:
     cutoff_local = _normalize_cutoff(cutoff_local)
+    cutoff_minutes = _hhmm_to_minutes(cutoff_local)
     if not openmeteo_cache_has_date(
         local_date,
         history_json=config.openmeteo_history_json,
@@ -856,6 +983,9 @@ def predict_heat_risk(
     openmeteo_missing = [column for column in openmeteo_columns if column not in row.columns]
     if openmeteo_missing:
         raise ValueError(f"Prediction row is missing Open-Meteo model features: {openmeteo_missing}")
+    m4_missing = _m4_missing_columns(bundle, row)
+    if m4_missing:
+        raise ValueError(f"Prediction row is missing M4 model features: {m4_missing}")
 
     direct_remaining_heat = float(_clip_remaining(bundle["regressor"].predict(row[columns]))[0])
     openmeteo_remaining_heat = None
@@ -863,6 +993,14 @@ def predict_heat_risk(
         openmeteo_remaining_heat = float(
             _clip_remaining(bundle["openmeteo_regressor"].predict(row[openmeteo_columns]))[0]
         )
+    m4_remaining_values, m4_weights = _m4_predict_remaining_heat_and_weights(bundle, row)
+    m4_remaining_heat = float(m4_remaining_values[0]) if m4_remaining_values is not None else None
+    m4_expert_weights = (
+        {expert: float(weight) for expert, weight in m4_weights.iloc[0].items()}
+        if m4_weights is not None
+        else {}
+    )
+    m4_top_expert = max(m4_expert_weights, key=m4_expert_weights.get) if m4_expert_weights else None
     remaining_probabilities = _remaining_heat_probabilities(
         bundle.get("continuation_classifiers", {}),
         row[columns],
@@ -887,7 +1025,6 @@ def predict_heat_risk(
     remaining_heat = float(_predict_remaining_heat(bundle, row, prediction_method)[0])
     observed_max_c = float(row["tmpc_max_to_cutoff"].iloc[0])
     last_observation_minute = int(row["last_observation_minute"].iloc[0])
-    cutoff_minutes = _hhmm_to_minutes(cutoff_local)
     observation_lag_minutes = cutoff_minutes - last_observation_minute
     predicted_tmax_c = observed_max_c + remaining_heat
     interval = _prediction_interval(
@@ -919,6 +1056,14 @@ def predict_heat_risk(
             if openmeteo_remaining_heat is not None
             else None
         ),
+        "m4_predicted_remaining_heat_c": m4_remaining_heat,
+        "m4_predicted_tmax_c": (
+            observed_max_c + m4_remaining_heat
+            if m4_remaining_heat is not None
+            else None
+        ),
+        "m4_expert_weights": m4_expert_weights,
+        "m4_top_expert": m4_top_expert,
         "openmeteo_forecast_tmax_c": _optional_float(row.get("openmeteo_tmax_c", pd.Series([np.nan])).iloc[0]),
         "openmeteo_expected_remaining_heat_c": _optional_float(
             row.get("openmeteo_expected_remaining_heat_c", pd.Series([np.nan])).iloc[0]
@@ -1116,6 +1261,16 @@ def format_heat_risk_explanation(prediction: dict) -> str:
             f"{_format_c(openmeteo_tmax)}; model M3 sau khi hiệu chỉnh theo quan sát hiện tại cho "
             f"{_format_c(openmeteo_model_tmax)}."
         )
+    if prediction.get("prediction_method") == "m4":
+        m4_weights = prediction.get("m4_expert_weights") or {}
+        top_expert = prediction.get("m4_top_expert")
+        if isinstance(m4_weights, dict) and m4_weights:
+            weight_text = ", ".join(
+                f"{name}={float(weight):.0%}" for name, weight in sorted(m4_weights.items())
+            )
+            lines.append(f"M4 MoE: top expert {top_expert}; expert weights {weight_text}.")
+        elif top_expert:
+            lines.append(f"M4 MoE: top expert {top_expert}.")
     weather_lines = _format_weather_context(prediction.get("weather_context"))
     if weather_lines:
         lines.append("Nhận xét thời tiết METAR:")
@@ -1158,6 +1313,42 @@ def format_heat_risk_explanation(prediction: dict) -> str:
     return "\n".join(lines)
 
 
+def format_m4_brief_explanation(prediction: dict) -> str:
+    """Short, M4-only readable summary.
+
+    Unlike :func:`format_heat_risk_explanation`, this keeps only what the M4
+    model itself returns: observed max, remaining heat, final Tmax, the 80%
+    interval, and the mixture-of-experts gating. Other layers (thermal phase,
+    METAR, Open-Meteo/M3, threshold probabilities, next-update advice) are
+    intentionally left out so operators see just the M4 answer.
+    """
+    station = prediction.get("station")
+    local_date = prediction.get("local_date")
+    cutoff = prediction.get("cutoff_local")
+    observed_max = prediction.get("observed_max_to_cutoff_c")
+    remaining = prediction.get("m4_predicted_remaining_heat_c")
+    if remaining is None:
+        remaining = prediction.get("predicted_remaining_heat_c")
+    predicted_tmax = prediction.get("m4_predicted_tmax_c")
+    if predicted_tmax is None:
+        predicted_tmax = prediction.get("predicted_tmax_c")
+    top_expert = prediction.get("m4_top_expert")
+
+    lines = [
+        "=== M4 MoE — Tóm tắt ===",
+        f"Station {station} · ngày {local_date} · cutoff {cutoff}.",
+        (
+            f"Tmax dự báo: {_format_c(predicted_tmax)} "
+            f"(đã quan sát {_format_c(observed_max)}, dự báo tăng thêm {_format_signed_c(remaining)})."
+        ),
+    ]
+    if top_expert:
+        top_label = M4_EXPERT_LABELS.get(str(top_expert))
+        top_text = f"{top_expert} ({top_label})" if top_label else str(top_expert)
+        lines.append(f"Chuyên gia chính: {top_text}.")
+    return "\n".join(lines)
+
+
 def _format_c(value: object) -> str:
     if value is None:
         return "không có dữ liệu"
@@ -1165,6 +1356,17 @@ def _format_c(value: object) -> str:
         if pd.isna(value):
             return "không có dữ liệu"
         return f"{float(value):.1f}C"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _format_signed_c(value: object) -> str:
+    if value is None:
+        return "không có dữ liệu"
+    try:
+        if pd.isna(value):
+            return "không có dữ liệu"
+        return f"{float(value):+.1f}C"
     except (TypeError, ValueError):
         return str(value)
 
@@ -1559,6 +1761,25 @@ def _regression_pipeline(config: ProjectConfig) -> Pipeline:
     )
 
 
+def _quantile_regression_pipeline(config: ProjectConfig, quantile: float) -> Pipeline:
+    return Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="median")),
+            (
+                "regressor",
+                HistGradientBoostingRegressor(
+                    loss="quantile",
+                    quantile=quantile,
+                    learning_rate=0.03,
+                    max_iter=600,
+                    l2_regularization=0.1,
+                    random_state=config.random_state,
+                ),
+            ),
+        ]
+    )
+
+
 def _classifier_pipeline(config: ProjectConfig) -> Pipeline:
     return Pipeline(
         steps=[
@@ -1573,6 +1794,348 @@ def _classifier_pipeline(config: ProjectConfig) -> Pipeline:
                 ),
             ),
         ]
+    )
+
+
+def _m4_regression_pipeline(config: ProjectConfig) -> Pipeline:
+    return Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="median")),
+            (
+                "regressor",
+                HistGradientBoostingRegressor(
+                    learning_rate=0.05,
+                    max_iter=M4_REGRESSOR_MAX_ITER,
+                    l2_regularization=0.1,
+                    random_state=config.random_state,
+                ),
+            ),
+        ]
+    )
+
+
+def _m4_classifier_pipeline(config: ProjectConfig) -> Pipeline:
+    return Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="median")),
+            (
+                "classifier",
+                HistGradientBoostingClassifier(
+                    learning_rate=0.05,
+                    max_iter=M4_GATE_MAX_ITER,
+                    l2_regularization=0.1,
+                    random_state=config.random_state,
+                ),
+            ),
+        ]
+    )
+
+
+class _ConstantM4GatingModel:
+    def __init__(self, expert_name: str) -> None:
+        self.classes_ = np.asarray([expert_name])
+
+    def predict_proba(self, features: pd.DataFrame) -> np.ndarray:
+        return np.ones((len(features), 1))
+
+
+def _m4_oof_folds(
+    frame: pd.DataFrame,
+    fold_count: int = M4_DEFAULT_FOLD_COUNT,
+) -> list[tuple[set[str], set[str]]]:
+    dates = pd.Series(sorted(frame["local_date"].astype(str).unique()))
+    if len(dates) < 2:
+        return []
+    effective_fold_count = min(max(2, fold_count), len(dates))
+    folds = []
+    for validation_dates in np.array_split(dates.to_numpy(), effective_fold_count):
+        validation_set = {str(date) for date in validation_dates}
+        training_set = set(dates.astype(str)) - validation_set
+        if training_set and validation_set:
+            folds.append((training_set, validation_set))
+    return folds
+
+
+def _fit_m4_expert(
+    config: ProjectConfig,
+    train: pd.DataFrame,
+    columns: list[str],
+    expert_name: str,
+) -> Pipeline:
+    model = _m4_regression_pipeline(config)
+    sample_weight = _m4_expert_sample_weight(train, expert_name)
+    model.fit(train[columns], train[TARGET_COLUMN], regressor__sample_weight=sample_weight)
+    return model
+
+
+def _m4_expert_sample_weight(frame: pd.DataFrame, expert_name: str) -> np.ndarray:
+    weight = np.ones(len(frame), dtype=float)
+    cutoff = _numeric_series(frame, "cutoff_minutes")
+    remaining_to_peak = _numeric_series(frame, "cutoff_minutes_before_monthly_median_tmax_time")
+    rise_60m = _numeric_series(frame, "temp_rise_last_60m")
+    rise_120m = _numeric_series(frame, "temp_rise_last_120m")
+    minutes_since_max = _numeric_series(frame, "minutes_since_observed_max")
+    flat_duration = _numeric_series(frame, "temp_flat_duration_last_2h")
+    forecast_delta = _numeric_series(frame, "openmeteo_tmax_minus_observed_max_c").abs()
+    weather_suppression = _numeric_series(frame, "weather_suppression_score")
+    fog = _numeric_series(frame, "fog_observed_to_cutoff")
+    low_cloud = _numeric_series(frame, "low_cloud_seen_last_2h")
+    wind_speed = _numeric_series(frame, "sknt_last_to_cutoff")
+    east_wind = _numeric_series(frame, "wind_regime_e_last_to_cutoff")
+    west_wind = _numeric_series(frame, "wind_regime_w_last_to_cutoff")
+    openmeteo_available = _numeric_series(frame, "openmeteo_tmax_c").notna()
+
+    if expert_name == "A":
+        weight += 2.0 * ((cutoff <= 10 * 60) | (remaining_to_peak >= 120)).to_numpy(dtype=float)
+    elif expert_name == "B":
+        weight += 2.0 * ((rise_60m >= 1.0) | (rise_120m >= 2.0)).to_numpy(dtype=float)
+    elif expert_name == "C":
+        weight += 2.0 * ((remaining_to_peak <= 60) | (flat_duration >= 60) | (minutes_since_max <= 30)).to_numpy(dtype=float)
+    elif expert_name == "D":
+        weight += 2.0 * (forecast_delta >= 2.0).to_numpy(dtype=float)
+    elif expert_name == "E":
+        weight += 2.0 * ((weather_suppression >= 1.0) | (fog > 0) | (low_cloud > 0)).to_numpy(dtype=float)
+    elif expert_name == "F":
+        weight += 2.0 * (((east_wind > 0) | (west_wind > 0)) & (wind_speed >= 8.0)).to_numpy(dtype=float)
+    elif expert_name == "G":
+        weight += 2.0 * openmeteo_available.to_numpy(dtype=float)
+    return weight
+
+
+def _numeric_series(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column not in frame:
+        return pd.Series(np.nan, index=frame.index, dtype=float)
+    return pd.to_numeric(frame[column], errors="coerce")
+
+
+def _train_m4_model(
+    config: ProjectConfig,
+    train: pd.DataFrame,
+    test: pd.DataFrame,
+    extended_columns: list[str],
+    openmeteo_columns: list[str],
+) -> dict:
+    if len(train) < M4_MIN_TRAIN_ROWS:
+        return _empty_m4_result()
+    expert_columns = _m4_expert_columns_by_name(extended_columns, openmeteo_columns)
+    folds = _m4_oof_folds(train)
+    if not folds:
+        return _empty_m4_result()
+
+    oof = train[["local_date", TARGET_COLUMN]].copy()
+    for expert_name in M4_EXPERT_NAMES:
+        oof[f"m4_expert_{expert_name}_remaining_heat_c"] = np.nan
+
+    for fold_train_dates, fold_validation_dates in folds:
+        fold_train = train[train["local_date"].astype(str).isin(fold_train_dates)]
+        fold_validation = train[train["local_date"].astype(str).isin(fold_validation_dates)]
+        if len(fold_train) < M4_MIN_TRAIN_ROWS or fold_validation.empty:
+            continue
+        for expert_name in M4_EXPERT_NAMES:
+            columns = expert_columns[expert_name]
+            expert = _fit_m4_expert(config, fold_train, columns, expert_name)
+            oof.loc[
+                fold_validation.index,
+                f"m4_expert_{expert_name}_remaining_heat_c",
+            ] = _clip_remaining(expert.predict(fold_validation[columns]))
+
+    prediction_columns = [f"m4_expert_{name}_remaining_heat_c" for name in M4_EXPERT_NAMES]
+    available_oof = oof.dropna(subset=prediction_columns)
+    if len(available_oof) < M4_MIN_TRAIN_ROWS:
+        return _empty_m4_result()
+    errors = np.column_stack(
+        [
+            (available_oof[column].to_numpy() - available_oof[TARGET_COLUMN].to_numpy())
+            for column in prediction_columns
+        ]
+    )
+    gate_target = np.asarray(M4_EXPERT_NAMES)[np.argmin(np.abs(errors), axis=1)]
+    gate_train = train.loc[available_oof.index].copy()
+    for column in prediction_columns:
+        gate_train[column] = available_oof[column]
+    gating_columns = _m4_gating_feature_columns(gate_train)
+    gating_model = _fit_m4_gating_model(config, gate_train, gating_columns, gate_target)
+
+    experts = {
+        expert_name: _fit_m4_expert(config, train, expert_columns[expert_name], expert_name)
+        for expert_name in M4_EXPERT_NAMES
+    }
+    train_predictions, train_weights = _m4_predict_remaining_heat_and_weights(
+        {
+            "m4_experts": experts,
+            "m4_expert_columns": expert_columns,
+            "m4_gating_model": gating_model,
+            "m4_gating_columns": gating_columns,
+            "m4_expert_names": list(M4_EXPERT_NAMES),
+        },
+        train,
+    )
+    test_predictions, test_weights = _m4_predict_remaining_heat_and_weights(
+        {
+            "m4_experts": experts,
+            "m4_expert_columns": expert_columns,
+            "m4_gating_model": gating_model,
+            "m4_gating_columns": gating_columns,
+            "m4_expert_names": list(M4_EXPERT_NAMES),
+        },
+        test,
+    )
+    return {
+        "available": True,
+        "experts": experts,
+        "expert_columns": expert_columns,
+        "gating_model": gating_model,
+        "gating_columns": gating_columns,
+        "expert_names": list(M4_EXPERT_NAMES),
+        "train_prediction": train_predictions,
+        "test_prediction": test_predictions,
+        "test_weights": test_weights,
+        "metrics": _m4_metrics(test, test_predictions, test_weights, experts, expert_columns),
+        "oof_fold_count": len(folds),
+    }
+
+
+def _empty_m4_result() -> dict:
+    return {
+        "available": False,
+        "experts": {},
+        "expert_columns": {},
+        "gating_model": None,
+        "gating_columns": [],
+        "expert_names": list(M4_EXPERT_NAMES),
+        "train_prediction": None,
+        "test_prediction": None,
+        "test_weights": None,
+        "metrics": {},
+        "oof_fold_count": 0,
+    }
+
+
+def _fit_m4_gating_model(
+    config: ProjectConfig,
+    gate_train: pd.DataFrame,
+    gating_columns: list[str],
+    gate_target: np.ndarray,
+) -> Pipeline | _ConstantM4GatingModel:
+    unique = np.unique(gate_target)
+    if len(unique) == 1 or not gating_columns:
+        return _ConstantM4GatingModel(str(unique[0]))
+    model = _m4_classifier_pipeline(config)
+    model.fit(gate_train[gating_columns], gate_target)
+    return model
+
+
+def _m4_predict_remaining_heat_and_weights(
+    bundle: dict,
+    frame: pd.DataFrame,
+) -> tuple[np.ndarray | None, pd.DataFrame | None]:
+    if not _m4_bundle_available(bundle):
+        return None, None
+    experts = bundle.get("m4_experts", {})
+    expert_columns = bundle.get("m4_expert_columns", {})
+    gating_model = bundle.get("m4_gating_model")
+    gating_columns = bundle.get("m4_gating_columns", [])
+    expert_names = list(bundle.get("m4_expert_names", M4_EXPERT_NAMES))
+    if not experts or gating_model is None or not expert_names:
+        return None, None
+
+    gating_frame = frame.copy()
+    expert_predictions = {}
+    for expert_name in expert_names:
+        expert = experts.get(expert_name)
+        columns = expert_columns.get(expert_name, [])
+        if expert is None or not columns:
+            return None, None
+        prediction = _clip_remaining(expert.predict(frame[columns]))
+        expert_predictions[expert_name] = prediction
+        gating_frame[f"m4_expert_{expert_name}_remaining_heat_c"] = prediction
+
+    if gating_columns:
+        probabilities = gating_model.predict_proba(gating_frame[gating_columns])
+    else:
+        probabilities = gating_model.predict_proba(gating_frame)
+    weights = pd.DataFrame(0.0, index=frame.index, columns=expert_names)
+    for class_index, expert_name in enumerate(getattr(gating_model, "classes_", [])):
+        if str(expert_name) in weights:
+            weights[str(expert_name)] = probabilities[:, class_index]
+    row_sums = weights.sum(axis=1).replace(0.0, np.nan)
+    weights = weights.div(row_sums, axis=0).fillna(1.0 / len(expert_names))
+    stacked_predictions = np.column_stack([expert_predictions[name] for name in expert_names])
+    blended = np.sum(stacked_predictions * weights[expert_names].to_numpy(), axis=1)
+    return _clip_remaining(blended), weights
+
+
+def _m4_missing_columns(bundle: dict, frame: pd.DataFrame) -> list[str]:
+    if not _m4_bundle_available(bundle):
+        return []
+    required = []
+    for columns in bundle.get("m4_expert_columns", {}).values():
+        required.extend(columns)
+    required.extend(
+        column
+        for column in bundle.get("m4_gating_columns", [])
+        if not column.startswith("m4_expert_")
+    )
+    return [column for column in sorted(set(required)) if column not in frame.columns]
+
+
+def _m4_metrics(
+    test: pd.DataFrame,
+    prediction: np.ndarray,
+    weights: pd.DataFrame,
+    experts: dict[str, Pipeline],
+    expert_columns: dict[str, list[str]],
+) -> dict:
+    expert_mae = {}
+    for expert_name, expert in experts.items():
+        columns = expert_columns[expert_name]
+        expert_prediction = _clip_remaining(expert.predict(test[columns]))
+        expert_mae[expert_name] = float(mean_absolute_error(test[TARGET_COLUMN], expert_prediction))
+    top_experts = weights.idxmax(axis=1)
+    return {
+        "m4_remaining_heat_mae_c": float(mean_absolute_error(test[TARGET_COLUMN], prediction)),
+        "m4_tmax_mae_c": float(
+            mean_absolute_error(
+                test[FINAL_TMAX_COLUMN],
+                test["tmpc_max_to_cutoff"].to_numpy() + prediction,
+            )
+        ),
+        "m4_expert_mae_c": expert_mae,
+        "m4_gate_top_expert_rates": {
+            str(expert): float(rate) for expert, rate in top_experts.value_counts(normalize=True).items()
+        },
+    }
+
+
+def _m4_weight_summary_by_cutoff(
+    test: pd.DataFrame,
+    weights: pd.DataFrame | None,
+) -> list[dict]:
+    if weights is None:
+        return []
+    frame = test[["cutoff_local"]].copy()
+    for expert_name in weights.columns:
+        frame[f"weight_{expert_name}"] = weights[expert_name].to_numpy()
+    output = []
+    for cutoff, group in frame.groupby("cutoff_local"):
+        row = {"cutoff_local": str(cutoff), "n": int(len(group))}
+        for expert_name in weights.columns:
+            row[f"mean_weight_{expert_name}"] = float(group[f"weight_{expert_name}"].mean())
+        output.append(row)
+    return sorted(output, key=lambda row: _hhmm_to_minutes(row["cutoff_local"]))
+
+
+def _m4_bundle_available(bundle: dict) -> bool:
+    experts = bundle.get("m4_experts", {})
+    expert_columns = bundle.get("m4_expert_columns", {})
+    expert_names = list(bundle.get("m4_expert_names", M4_EXPERT_NAMES))
+    return (
+        bool(experts)
+        and bundle.get("m4_gating_model") is not None
+        and bool(expert_columns)
+        and "I" not in expert_names
+        and "I" not in experts
+        and all(name in experts and name in expert_columns for name in expert_names)
     )
 
 
@@ -1995,12 +2558,18 @@ def _predict_remaining_heat(
     openmeteo_columns = bundle.get("openmeteo_feature_columns", [])
     if method == "openmeteo" and bundle.get("openmeteo_regressor") is not None and openmeteo_columns:
         return _clip_remaining(bundle["openmeteo_regressor"].predict(frame[openmeteo_columns]))
+    if method == "m4" and _m4_bundle_available(bundle):
+        prediction, _ = _m4_predict_remaining_heat_and_weights(bundle, frame)
+        if prediction is not None:
+            return prediction
     return _clip_remaining(bundle["regressor"].predict(frame[columns]))
 
 
 def _resolve_prediction_method(bundle: dict, override: str | None) -> str:
     selected = bundle["metrics"].get("selected_prediction_method", "direct")
     if override is None or override == "auto":
+        if selected == "m4" and not _m4_bundle_available(bundle):
+            raise ValueError("M4/Mixture-of-Experts bundle is legacy or unavailable. Retrain heat-risk model.")
         return selected
     method = override.lower().replace("-", "_")
     aliases = {
@@ -2015,7 +2584,9 @@ def _resolve_prediction_method(bundle: dict, override: str | None) -> str:
         or not bundle.get("openmeteo_feature_columns", [])
     ):
         raise ValueError("M3/Open-Meteo is not available for this location/model bundle.")
-    if method not in {"direct", "two_stage", "m1", "openmeteo"}:
+    if method == "m4" and not _m4_bundle_available(bundle):
+        raise ValueError("M4/Mixture-of-Experts is not available for this location/model bundle.")
+    if method not in {"direct", "two_stage", "m1", "openmeteo", "m4"}:
         raise ValueError(f"Unsupported prediction method: {override}")
     return method
 
@@ -2351,9 +2922,21 @@ def _model_comparison(test: pd.DataFrame) -> dict:
     output = {
         "m0_heat_risk": {
             "tmax_mae_c": float(mean_absolute_error(test[FINAL_TMAX_COLUMN], test[m0_column])),
+            "remaining_heat_mae_c": float(
+                mean_absolute_error(
+                    test[TARGET_COLUMN],
+                    test[m0_column] - test["tmpc_max_to_cutoff"],
+                )
+            ),
         },
         "m1_phase_features": {
             "tmax_mae_c": float(mean_absolute_error(test[FINAL_TMAX_COLUMN], test["m1_predicted_tmax_c"])),
+            "remaining_heat_mae_c": float(
+                mean_absolute_error(
+                    test[TARGET_COLUMN],
+                    test["m1_predicted_tmax_c"] - test["tmpc_max_to_cutoff"],
+                )
+            ),
         },
     }
     openmeteo_mask = test["openmeteo_predicted_tmax_c"].notna()
@@ -2368,7 +2951,42 @@ def _model_comparison(test: pd.DataFrame) -> dict:
             if openmeteo_mask.any()
             else None
         ),
+        "remaining_heat_mae_c": (
+            float(
+                mean_absolute_error(
+                    test.loc[openmeteo_mask, TARGET_COLUMN],
+                    test.loc[openmeteo_mask, "openmeteo_predicted_tmax_c"]
+                    - test.loc[openmeteo_mask, "tmpc_max_to_cutoff"],
+                )
+            )
+            if openmeteo_mask.any()
+            else None
+        ),
         "n": int(openmeteo_mask.sum()),
+    }
+    m4_mask = test["m4_predicted_tmax_c"].notna() if "m4_predicted_tmax_c" in test else pd.Series(False, index=test.index)
+    output["m4_mixture_of_experts"] = {
+        "tmax_mae_c": (
+            float(
+                mean_absolute_error(
+                    test.loc[m4_mask, FINAL_TMAX_COLUMN],
+                    test.loc[m4_mask, "m4_predicted_tmax_c"],
+                )
+            )
+            if m4_mask.any()
+            else None
+        ),
+        "remaining_heat_mae_c": (
+            float(
+                mean_absolute_error(
+                    test.loc[m4_mask, TARGET_COLUMN],
+                    test.loc[m4_mask, "m4_predicted_remaining_heat_c"],
+                )
+            )
+            if m4_mask.any() and "m4_predicted_remaining_heat_c" in test
+            else None
+        ),
+        "n": int(m4_mask.sum()),
     }
     mask = test["curve_predicted_tmax_c"].notna()
     output["m2_future_curve"] = {
@@ -2779,6 +3397,7 @@ def _plot_thermal_curve_diagnostics(test: pd.DataFrame, report: dict, output_pat
         {"model": "M1", "mae": comparison.get("m1_phase_features", {}).get("tmax_mae_c")},
         {"model": "M2 Curve", "mae": comparison.get("m2_future_curve", {}).get("tmax_mae_c")},
         {"model": "M3 OM", "mae": comparison.get("m3_openmeteo", {}).get("tmax_mae_c")},
+        {"model": "M4 MoE", "mae": comparison.get("m4_mixture_of_experts", {}).get("tmax_mae_c")},
     ]
     compare_frame = pd.DataFrame(rows).dropna(subset=["mae"])
     if not compare_frame.empty:

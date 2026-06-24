@@ -1,6 +1,6 @@
 station: EDDM
 timezone: Europe/Berlin
-cutoff_local: '10:00'
+cutoff_local: '15:00'
 complete_day_min_local: '23:00'
 target: tmax
 input_csv: data/eddm/EDDM.csv
@@ -9,11 +9,14 @@ prefer_duckdb: true
 raw_csv_files:
 - data/eddm/EDDM.csv
 heat_risk_cutoffs:
-- '10:00'
-- '11:00'
 - '12:00'
 - '13:00'
 - '14:00'
+- '15:00'
+- '16:00'
+- '17:00'
+- '18:00'
+- '19:00'
 heat_risk_thresholds_c:
 - 25.0
 - 26.0
@@ -21,6 +24,10 @@ heat_risk_thresholds_c:
 - 28.0
 - 29.0
 - 30.0
+- 31.0
+- 32.0
+- 33.0
+- 34.0
 heat_risk_dataset_parquet: artifacts/eddm/eddm_heat_risk_dataset.parquet
 heat_risk_model_path: artifacts/eddm/eddm_heat_risk_model.joblib
 heat_risk_metrics_path: artifacts/eddm/eddm_heat_risk_metrics.json

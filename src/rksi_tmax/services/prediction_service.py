@@ -7,6 +7,7 @@ import joblib
 from rksi_tmax.config import ProjectConfig
 from rksi_tmax.heat_risk import (
     format_heat_risk_explanation,
+    _m4_bundle_available,
     plot_prediction_curve,
     predict_heat_risk,
 )
@@ -77,6 +78,14 @@ def available_prediction_methods(config: ProjectConfig) -> list[dict[str, str]]:
                 "description": "Use Open-Meteo corrected model.",
             }
         )
+    if _m4_bundle_available(bundle):
+        methods.append(
+            {
+                "label": "M4 MoE",
+                "value": "m4",
+                "description": "Use mixture-of-experts remaining-heat model.",
+            }
+        )
     return methods
 
 
@@ -86,6 +95,7 @@ def _method_label(method: str) -> str:
         "two_stage": "M0 two-stage",
         "m1": "M1",
         "openmeteo": "M3 Open-Meteo",
+        "m4": "M4 MoE",
     }
     return labels.get(method, method)
 

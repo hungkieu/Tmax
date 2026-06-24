@@ -6,9 +6,14 @@ import pytest
 
 from rksi_tmax.config import ProjectConfig
 from rksi_tmax.heat_risk import (
+    M4_EXPERT_NAMES,
     _add_future_curve_targets,
     _false_plateau_rule,
     _integer_tmax_win_rates,
+    _m4_gating_feature_columns,
+    _m4_bundle_available,
+    _m4_oof_folds,
+    _m4_predict_remaining_heat_and_weights,
     _possible_new_peak_output,
     format_heat_risk_explanation,
     _make_single_cutoff_dataset,
@@ -71,6 +76,21 @@ class FixedProbabilityClassifier:
         return np.column_stack(
             [np.full(len(features), 1.0 - self.probability), np.full(len(features), self.probability)]
         )
+
+
+class FixedRegressor:
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+    def predict(self, features: pd.DataFrame) -> np.ndarray:
+        return np.full(len(features), self.value)
+
+
+class FixedM4GatingModel:
+    classes_ = np.asarray(["A", "B"])
+
+    def predict_proba(self, features: pd.DataFrame) -> np.ndarray:
+        return np.column_stack([np.full(len(features), 0.25), np.full(len(features), 0.75)])
 
 
 def _observations() -> pd.DataFrame:
@@ -311,11 +331,106 @@ def test_resolve_prediction_method_allows_supported_m3_alias() -> None:
     assert _resolve_prediction_method(bundle, "auto") == "m1"
 
 
+def test_resolve_prediction_method_allows_supported_m4() -> None:
+    bundle = {
+        "metrics": {"selected_prediction_method": "m4"},
+        "m4_experts": {"A": object()},
+        "m4_expert_columns": {"A": ["base_feature"]},
+        "m4_gating_model": object(),
+        "m4_expert_names": ["A"],
+    }
+
+    assert _resolve_prediction_method(bundle, "m4") == "m4"
+    assert _resolve_prediction_method(bundle, "auto") == "m4"
+
+
+def test_m4_oof_folds_keep_dates_grouped() -> None:
+    frame = pd.DataFrame(
+        {
+            "local_date": ["2024-06-01", "2024-06-01", "2024-06-02", "2024-06-02", "2024-06-03"],
+            "x": [1, 2, 3, 4, 5],
+        }
+    )
+
+    folds = _m4_oof_folds(frame, fold_count=3)
+
+    assert folds
+    for train_dates, validation_dates in folds:
+        assert train_dates.isdisjoint(validation_dates)
+    validation_dates = set().union(*(validation for _, validation in folds))
+    assert validation_dates == set(frame["local_date"].unique())
+
+
+def test_m4_prediction_blends_experts_with_soft_weights() -> None:
+    frame = pd.DataFrame({"base_feature": [1.0, 2.0], "gate_feature": [3.0, 4.0]})
+    bundle = {
+        "m4_experts": {"A": FixedRegressor(1.0), "B": FixedRegressor(3.0)},
+        "m4_expert_columns": {"A": ["base_feature"], "B": ["base_feature"]},
+        "m4_gating_model": FixedM4GatingModel(),
+        "m4_gating_columns": [
+            "gate_feature",
+            "m4_expert_A_remaining_heat_c",
+            "m4_expert_B_remaining_heat_c",
+        ],
+        "m4_expert_names": ["A", "B"],
+    }
+
+    prediction, weights = _m4_predict_remaining_heat_and_weights(bundle, frame)
+
+    assert prediction is not None
+    assert weights is not None
+    assert prediction.tolist() == [2.5, 2.5]
+    assert np.allclose(weights.sum(axis=1), 1.0)
+    assert list(weights.columns) == ["A", "B"]
+
+
+def test_m4_expert_set_excludes_solar_expert_and_gating_features() -> None:
+    frame = pd.DataFrame(
+        {
+            "cutoff_minutes": [600],
+            "openmeteo_tmax_c": [25.0],
+            "solar_shortwave_sum_to_cutoff": [1000.0],
+            "solar_high_but_temp_flat_flag": [1],
+            "temp_rise_per_1000_ghi": [1.2],
+            "m4_expert_A_remaining_heat_c": [1.0],
+            "m4_expert_G_remaining_heat_c": [2.0],
+        }
+    )
+
+    columns = _m4_gating_feature_columns(frame)
+
+    assert "I" not in M4_EXPERT_NAMES
+    assert "solar_shortwave_sum_to_cutoff" not in columns
+    assert "solar_high_but_temp_flat_flag" not in columns
+    assert "temp_rise_per_1000_ghi" not in columns
+
+
+def test_m4_legacy_bundle_with_solar_expert_is_unavailable() -> None:
+    bundle = {
+        "metrics": {"selected_prediction_method": "m4"},
+        "m4_experts": {"A": object(), "I": object()},
+        "m4_expert_columns": {"A": ["base_feature"], "I": ["solar_shortwave_sum_to_cutoff"]},
+        "m4_gating_model": object(),
+        "m4_expert_names": ["A", "I"],
+    }
+
+    assert not _m4_bundle_available(bundle)
+    with pytest.raises(ValueError, match="legacy|unavailable"):
+        _resolve_prediction_method(bundle, "auto")
+
+
 def test_resolve_prediction_method_rejects_unsupported_m3() -> None:
     bundle = {"metrics": {"selected_prediction_method": "m1"}}
 
     with pytest.raises(ValueError, match="M3/Open-Meteo"):
         _resolve_prediction_method(bundle, "m3")
+
+
+def test_resolve_prediction_method_rejects_unsupported_m4() -> None:
+    bundle = {"metrics": {"selected_prediction_method": "m1"}}
+
+    with pytest.raises(ValueError, match="M4/Mixture-of-Experts"):
+        _resolve_prediction_method(bundle, "m4")
 
 
 def test_false_plateau_rule_detects_suppressed_heating() -> None:
@@ -346,11 +461,13 @@ def test_format_heat_risk_explanation_includes_key_fields() -> None:
             "last_temp_to_cutoff_c": 22.0,
             "predicted_remaining_heat_c": 2.0,
             "predicted_tmax_c": 24.0,
+            "prediction_method": "openmeteo",
             "prediction_interval_80_low_c": 22.5,
             "prediction_interval_80_high_c": 25.5,
             "thermal_phase": "uncertain_transition",
             "late_warming_risk": "high",
             "late_warming_warning": "elevated_late_warming_risk",
+            "openmeteo_predicted_remaining_heat_c": 1.5,
             "weather_context": {
                 "summary": [
                     "Có mưa trong 2 giờ gần đây.",
