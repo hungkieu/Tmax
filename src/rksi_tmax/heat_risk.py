@@ -77,6 +77,11 @@ THERMAL_PHASE_LABELS = (
     "uncertain_transition",
 )
 M4_EXPERT_NAMES = ("A", "B", "C", "D", "E", "F", "G")
+# Experts that rely on Open-Meteo NWP forecast features. They use the Open-Meteo
+# feature set and are trained only on rows that actually have a real NWP forecast
+# (no median-imputed NWP). The remaining experts use the METAR/ASOS M1 feature set
+# on the full history, which keeps the mixture diverse and removes NWP pollution.
+M4_NWP_EXPERTS = frozenset({"D", "G"})
 M4_MIN_TRAIN_ROWS = 100
 M4_DEFAULT_FOLD_COUNT = 3
 M4_REGRESSOR_MAX_ITER = 180
@@ -311,11 +316,24 @@ def _m4_expert_columns(
     extended_columns: list[str],
     openmeteo_columns: list[str],
 ) -> list[str]:
-    if expert_name in {"D", "G"} and openmeteo_columns:
-        return openmeteo_columns
-    if openmeteo_columns:
+    if openmeteo_columns and expert_name in M4_NWP_EXPERTS:
         return openmeteo_columns
     return extended_columns
+
+
+def _m4_expert_rows(
+    frame: pd.DataFrame,
+    expert_name: str,
+    use_nwp_experts: bool,
+) -> pd.DataFrame:
+    """Rows an expert trains/validates on.
+
+    NWP experts only see rows with a real Open-Meteo forecast so their forecast
+    features are never median-imputed; other experts see the full history.
+    """
+    if use_nwp_experts and expert_name in M4_NWP_EXPERTS:
+        return frame[_openmeteo_available_mask(frame)]
+    return frame
 
 
 def _m4_expert_columns_by_name(
@@ -1917,23 +1935,44 @@ def _train_m4_model(
 ) -> dict:
     if len(train) < M4_MIN_TRAIN_ROWS:
         return _empty_m4_result()
-    expert_columns = _m4_expert_columns_by_name(extended_columns, openmeteo_columns)
-    folds = _m4_oof_folds(train)
+    # Only enable the NWP experts when there are enough rows with a real
+    # Open-Meteo forecast; otherwise fall back to a pure METAR/ASOS mixture.
+    use_nwp_experts = bool(openmeteo_columns) and int(
+        _openmeteo_available_mask(train).sum()
+    ) >= M4_MIN_TRAIN_ROWS
+    expert_columns = _m4_expert_columns_by_name(
+        extended_columns,
+        openmeteo_columns if use_nwp_experts else [],
+    )
+    # Build the gate on the regime it is actually used in at inference: when NWP
+    # experts are enabled, both the OOF folds and the gate train on rows that have
+    # a real Open-Meteo forecast. Folding over the NWP-available subset keeps NWP
+    # rows present in every fold's training portion (a contiguous-date fold would
+    # otherwise leave all NWP rows in one validation chunk with no NWP to train on).
+    gate_base = train[_openmeteo_available_mask(train)] if use_nwp_experts else train
+    folds = _m4_oof_folds(gate_base)
     if not folds:
         return _empty_m4_result()
 
-    oof = train[["local_date", TARGET_COLUMN]].copy()
+    oof = gate_base[["local_date", TARGET_COLUMN]].copy()
     for expert_name in M4_EXPERT_NAMES:
         oof[f"m4_expert_{expert_name}_remaining_heat_c"] = np.nan
 
-    for fold_train_dates, fold_validation_dates in folds:
-        fold_train = train[train["local_date"].astype(str).isin(fold_train_dates)]
-        fold_validation = train[train["local_date"].astype(str).isin(fold_validation_dates)]
-        if len(fold_train) < M4_MIN_TRAIN_ROWS or fold_validation.empty:
+    for _fold_train_dates, fold_validation_dates in folds:
+        validation_dates = set(fold_validation_dates)
+        # Experts train on the full history minus the validation dates so the
+        # METAR/ASOS experts keep all years; NWP experts additionally drop to
+        # rows with a real forecast via _m4_expert_rows.
+        fold_train = train[~train["local_date"].astype(str).isin(validation_dates)]
+        fold_validation = gate_base[gate_base["local_date"].astype(str).isin(validation_dates)]
+        if fold_validation.empty:
             continue
         for expert_name in M4_EXPERT_NAMES:
             columns = expert_columns[expert_name]
-            expert = _fit_m4_expert(config, fold_train, columns, expert_name)
+            expert_train = _m4_expert_rows(fold_train, expert_name, use_nwp_experts)
+            if len(expert_train) < M4_MIN_TRAIN_ROWS:
+                continue
+            expert = _fit_m4_expert(config, expert_train, columns, expert_name)
             oof.loc[
                 fold_validation.index,
                 f"m4_expert_{expert_name}_remaining_heat_c",
@@ -1957,7 +1996,12 @@ def _train_m4_model(
     gating_model = _fit_m4_gating_model(config, gate_train, gating_columns, gate_target)
 
     experts = {
-        expert_name: _fit_m4_expert(config, train, expert_columns[expert_name], expert_name)
+        expert_name: _fit_m4_expert(
+            config,
+            _m4_expert_rows(train, expert_name, use_nwp_experts),
+            expert_columns[expert_name],
+            expert_name,
+        )
         for expert_name in M4_EXPERT_NAMES
     }
     train_predictions, train_weights = _m4_predict_remaining_heat_and_weights(

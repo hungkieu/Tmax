@@ -15,7 +15,6 @@ uv run <command> [options]
 - [Open-Meteo Commands](#open-meteo-commands)
 - [Heat-Risk Model Commands](#heat-risk-model-commands)
 - [Prediction Command](#prediction-command)
-- [Telegram Report Command](#telegram-report-command)
 - [Common Daily Recipes](#common-daily-recipes)
 
 ## Cutoff And Date Rules
@@ -280,42 +279,6 @@ Options:
 Prediction does not require rebuilding the full dataset. It builds one feature
 row directly from the configured data source when `--dataset` is omitted or
 does not contain the requested row.
-
-## Telegram Report Command
-
-### `rksi-telegram-report`
-
-Build a combined report for configured stations.
-
-```powershell
-uv run rksi-telegram-report --output artifacts/shared/telegram_report.md --hours 4
-uv run rksi-telegram-report --no-fetch --no-sync-duckdb --output artifacts/shared/telegram_report.md
-uv run rksi-telegram-report --config configs/default.yaml --config configs/wsss.yaml
-```
-
-Options:
-
-| Option | Meaning |
-|---|---|
-| `--output PATH` | Report markdown path. Default `artifacts/telegram_report.md`. |
-| `--metar-file PATH` | METAR text file. Default `metar.txt`. |
-| `--hours N` | Fetch lookback window. Default `4`. |
-| `--fetch` / `--no-fetch` | Fetch new METAR lines before importing. |
-| `--sync-duckdb` / `--no-sync-duckdb` | Sync DuckDB when missing/too short. |
-| `--config PATH` | Add a config to the report. Repeat for multiple stations. |
-| `--reference-date YYYY-MM-DD` | UTC date for METAR date inference. |
-
-The report selects the latest configured heat-risk cutoff that is not later
-than each station's local current time. Each station summary includes the
-selected Tmax forecast, remaining-heat probabilities, warning reasons, weather
-context, and when configured, the raw Open-Meteo Tmax plus the M3 corrected
-Tmax.
-
-Send the generated report:
-
-```powershell
-node scripts/send_telegram_report.mjs artifacts/telegram_report.md
-```
 
 ## Common Daily Recipes
 

@@ -43,8 +43,12 @@ Model layers:
   including forecast Tmax, hourly temperature shape, WMO weather code,
   precipitation/rain, wind, gusts, cloud, visibility, and precipitation
   probability.
-- `M4 Mixture-of-Experts`: gated ensemble of remaining-heat experts trained
-  on the M3 feature set and gated by current cutoff state.
+- `M4 Mixture-of-Experts`: gated ensemble of remaining-heat experts. The NWP
+  experts (D `forecast_disagreement`, G `openmeteo_evaluator`) use the Open-Meteo
+  feature set and train only on rows that have a real forecast (no median-imputed
+  NWP); the other experts use the METAR/ASOS M1 feature set over the full history.
+  A learned gate weights the experts per row by historical accuracy. This keeps
+  the mixture diverse and adds most of its value at early cutoffs.
 - `Thermal phase classifier`: predicts `pre_peak_ramp`, `peak_plateau`,
   `post_peak_decline`, or `uncertain_transition`.
 - `Late-warming classifiers`: estimate remaining heat `>= 0.5/1/2/3 C`.

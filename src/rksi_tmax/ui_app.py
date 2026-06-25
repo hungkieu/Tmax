@@ -15,7 +15,6 @@ from rksi_tmax.ui_tabs import (
     create_location_tab,
     location_tab,
     metar_tab,
-    next_metar_tab,
     predict_tab,
     train_tab,
 )
@@ -58,18 +57,10 @@ def main() -> None:
                 st.rerun()
 
     def operations_page() -> None:
-        from rksi_tmax.next_metar_temp import SUPPORTED_STATIONS
-
-        show_next_metar = config.station.upper() in SUPPORTED_STATIONS
-        base_labels = ["Locations", "METAR", "Train / Validate", "Predict"]
-        labels = (["Next-METAR"] + base_labels) if show_next_metar else base_labels
+        labels = ["Locations", "METAR", "Train / Validate", "Predict"]
         tabs = st.tabs(labels)
         tab_by_label = dict(zip(labels, tabs))
 
-        if show_next_metar:
-            with tab_by_label["Next-METAR"]:
-                importlib.reload(next_metar_tab)
-                next_metar_tab.render(config.station)
         with tab_by_label["Locations"]:
             importlib.reload(location_tab)
             location_tab.render(options, config, selected.path)

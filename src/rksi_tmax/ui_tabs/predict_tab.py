@@ -7,7 +7,7 @@ import streamlit as st
 
 from rksi_tmax.config import ProjectConfig
 from rksi_tmax.services import prediction_service
-from rksi_tmax.ui_components import render_json, render_plot, render_status_metrics
+from rksi_tmax.ui_components import render_json, render_status_metrics
 
 
 def render(config: ProjectConfig) -> None:
@@ -31,14 +31,6 @@ def render(config: ProjectConfig) -> None:
             options=cutoff_options,
             index=cutoff_options.index(config.cutoff_local),
         )
-        bet_enabled = st.checkbox("Estimate bet probability")
-        bet_temp_c = st.number_input(
-            "Bet temperature C",
-            value=30.0,
-            step=0.1,
-            help="Used only when Estimate bet probability is checked.",
-        )
-        make_plot = st.checkbox("Generate plot", value=True)
         submitted = st.form_submit_button("Predict", type="primary", use_container_width=True)
 
     if submitted:
@@ -53,8 +45,8 @@ def render(config: ProjectConfig) -> None:
                 config,
                 resolved_date,
                 resolved_cutoff,
-                bet_temp_c=float(bet_temp_c) if bet_enabled else None,
-                make_plot=make_plot,
+                bet_temp_c=None,
+                make_plot=False,
                 prediction_method=selected_method,
             )
         render_status_metrics(_prediction_status_metrics(result))
@@ -66,7 +58,6 @@ def render(config: ProjectConfig) -> None:
                 st.text(result["explanation"])
         else:
             st.text(result["explanation"])
-        render_plot(result.get("plot_path"))
         render_json("Selected Model Report", _selected_model_report(result))
         render_json("Full Prediction JSON (debug)", result)
 

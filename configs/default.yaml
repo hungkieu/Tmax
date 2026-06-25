@@ -21,9 +21,11 @@ openmeteo_live_json_pattern: data/rksi/openmeteo-rksi-{date}.json
 openmeteo_latitude: 37.4492
 openmeteo_longitude: 126.451
 openmeteo_timezone: GMT
-openmeteo_training_start_date: 2023-01-01
+openmeteo_training_start_date: 2022-01-01
 
 heat_risk_cutoffs:
+- "01:00"
+- "02:00"
 - "09:00"
 - "10:00"
 - "11:00"

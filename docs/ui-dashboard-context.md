@@ -34,12 +34,12 @@ Update this section whenever module boundaries change.
 - `src/rksi_tmax/ui_tabs/metar_tab.py`: METAR fetch/import/sync/verify tab.
 - `src/rksi_tmax/ui_tabs/location_tab.py`: create new location config, optional empty ASOS CSV header, and Open-Meteo API config.
 - `src/rksi_tmax/ui_tabs/train_tab.py`: Open-Meteo cache preparation, dataset build, train, validate, and metrics display tab.
-- `src/rksi_tmax/ui_tabs/predict_tab.py`: prediction controls, cut-off resolution, bet temperature input, explain text, JSON output, and optional plot.
+- `src/rksi_tmax/ui_tabs/predict_tab.py`: prediction controls, cut-off resolution, explain text, and JSON output.
 - `src/rksi_tmax/services/config_service.py`: discover and load station configs.
 - `src/rksi_tmax/services/db_service.py`: latest observation lookup, row counts, station coverage, and DuckDB health checks.
 - `src/rksi_tmax/services/metar_service.py`: fetch METAR, import station-scoped observations, sync database, and verify import results.
 - `src/rksi_tmax/services/training_service.py`: build dataset, train model, validate model, and return concise summaries.
-- `src/rksi_tmax/services/prediction_service.py`: resolve date/cut-off/latest observation, call prediction, format explanation, and return plot/output paths.
+- `src/rksi_tmax/services/prediction_service.py`: resolve date/cut-off/latest observation, call prediction, format explanation, and optionally return plot/output paths for non-dashboard callers.
 - `src/rksi_tmax/services/artifact_service.py`: inspect model, metrics, diagnostic, plot, and dataset artifacts.
 
 ## Service Ownership
@@ -50,7 +50,7 @@ Service modules are the boundary between Streamlit UI code and existing project 
 - `db_service` owns read-only database status and latest-observation queries.
 - `metar_service` owns fetch/import/sync/verify workflow. It must avoid importing multi-station METAR text into the wrong station CSV.
 - `training_service` owns Open-Meteo cache preparation, dataset build, model train, validation calls, and compact metric summaries.
-- `prediction_service` owns prediction input resolution, including latest cut-off from DuckDB, custom cut-off, model-method options, bet temperature, explanation text, JSON result, and plots.
+- `prediction_service` owns prediction input resolution, including latest cut-off from DuckDB, custom cut-off, model-method options, explanation text, JSON result, and optional plots for non-dashboard callers.
 - `artifact_service` owns filesystem inspection for generated artifacts and should not know Streamlit UI layout.
 
 ## Read This First Guide

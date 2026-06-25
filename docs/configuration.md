@@ -113,8 +113,8 @@ openmeteo_live_json_pattern: data/rksi/openmeteo-rksi-{date}.json
 
 For example, prediction for `2026-06-21` will use
 `data/rksi/openmeteo-rksi-2026-06-21.json`. The live row overrides the history
-row for that date. Prediction output and Telegram reports show both the raw
-Open-Meteo Tmax and the M3 corrected Tmax.
+row for that date. Prediction output shows both the raw Open-Meteo Tmax and
+the M3 corrected Tmax.
 
 Prepare cache from CLI:
 
@@ -360,19 +360,7 @@ uv run rksi-predict-heat-risk --config configs/new_station.yaml --date 2026-06-1
 The cutoff is local time for the new station, based on `timezone` in the
 config.
 
-### 7. Add To Combined Telegram Report
-
-Pass the config explicitly:
-
-```powershell
-uv run rksi-telegram-report --config configs/default.yaml --config configs/new_station.yaml
-```
-
-To make the new location part of the default automated report, update
-`DEFAULT_CONFIG_PATHS` and `DEFAULT_STATIONS` in
-`src/rksi_tmax/telegram_report.py`, then update tests.
-
-### 8. Add A Shortcut Command
+### 7. Add A Shortcut Command
 
 Shortcut commands such as `uv run wsss` are registered in two places:
 
@@ -381,7 +369,7 @@ Shortcut commands such as `uv run wsss` are registered in two places:
 
 If you do not need a shortcut, keep using `rksi-predict-heat-risk --config`.
 
-### 9. Refresh Local Model Artifacts
+### 8. Refresh Local Model Artifacts
 
 After training a new operational model, keep the generated files under
 `artifacts/` with station-specific names. If you still want a portable archive

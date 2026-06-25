@@ -24,7 +24,6 @@ phase, late-warming risk, and the future curve are supporting context.
 - [Supported Stations](#supported-stations)
 - [Daily Operation](#daily-operation)
 - [Local UI Dashboard](#local-ui-dashboard)
-- [Telegram Automation](#telegram-automation)
 - [Training Workflow](#training-workflow)
 - [Documentation](#documentation)
 - [Development Checks](#development-checks)
@@ -195,35 +194,11 @@ The UI lets you choose a YAML config/location, then use three tabs:
 - `Locations`: create a new station YAML config, optional empty ASOS CSV header, and Open-Meteo API coordinates/cache paths.
 - `METAR`: fetch station METAR, import station-scoped rows, sync DuckDB, and verify latest observations.
 - `Train / Validate`: prepare Open-Meteo M3 cache, build the heat-risk dataset, train, validate, and inspect metrics/artifacts.
-- `Predict`: choose latest database observation, config default cutoff, or a custom cutoff; choose Auto/M1/M3 when supported; optionally enter a bet temperature and generate the explanation/plot.
+- `Predict`: choose latest database observation, config default cutoff, or a custom cutoff; choose Auto/M1/M3 when supported; then generate the explanation and structured JSON output.
 
 The sidebar also has a `Delete location config` expander. It deletes only the selected YAML config after station-code confirmation; CSV, DuckDB rows, and model artifacts are kept.
 
 Implementation context for future UI edits is in `docs/ui-dashboard-context.md`.
-
-## Telegram Automation
-
-Generate the combined report locally:
-
-```powershell
-uv run rksi-telegram-report --output artifacts/shared/telegram_report.md --hours 4
-```
-
-Send the report to Telegram:
-
-```powershell
-node scripts/send_telegram_report.mjs artifacts/shared/telegram_report.md
-```
-
-Required environment variables:
-
-```text
-TELEGRAM_BOT_TOKEN
-TELEGRAM_CHAT_ID
-```
-
-Do not commit the bot token. If a token was pasted into chat or logs, rotate it
-in BotFather before using it again.
 
 ## Training Workflow
 

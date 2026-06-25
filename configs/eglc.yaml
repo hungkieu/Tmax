@@ -1,0 +1,42 @@
+station: EGLC
+timezone: Europe/London
+cutoff_local: '15:00'
+complete_day_min_local: '23:00'
+target: tmax
+input_csv: data/eglc/EGLC.csv
+input_db: artifacts/shared/observations.duckdb
+prefer_duckdb: true
+raw_csv_files:
+- data/eglc/EGLC.csv
+heat_risk_cutoffs:
+- '12:00'
+- '13:00'
+- '14:00'
+- '15:00'
+- '16:00'
+- '17:00'
+- '18:00'
+- '19:00'
+heat_risk_thresholds_c:
+- 25.0
+- 26.0
+- 27.0
+- 28.0
+- 29.0
+- 30.0
+- 31.0
+- 32.0
+- 33.0
+- 34.0
+heat_risk_dataset_parquet: artifacts/eglc/eglc_heat_risk_dataset.parquet
+heat_risk_model_path: artifacts/eglc/eglc_heat_risk_model.joblib
+heat_risk_metrics_path: artifacts/eglc/eglc_heat_risk_metrics.json
+test_fraction: 0.2
+random_state: 42
+feature_missing_threshold: 0.85
+openmeteo_history_json: data\eglc\openmeteo-eglc-history.json
+openmeteo_live_json_pattern: data/eglc/openmeteo-eglc-{date}.json
+openmeteo_latitude: 51.5053
+openmeteo_longitude: 0.0553
+openmeteo_timezone: GMT
+openmeteo_training_start_date: '2023-01-01'
