@@ -1,0 +1,52 @@
+station: ZBAA
+timezone: Asia/Shanghai
+cutoff_local: "09:00"
+complete_day_min_local: "23:00"
+target: tmax
+
+input_csv: ZBAA.csv
+input_db: artifacts/shared/observations.duckdb
+prefer_duckdb: false
+raw_csv_files:
+  - ZBAA.csv
+openmeteo_history_json: data/zbaa/openmeteo-zbaa-history.json
+openmeteo_live_json_pattern: data/zbaa/openmeteo-zbaa-{date}.json
+openmeteo_latitude: 40.0799
+openmeteo_longitude: 116.6031
+openmeteo_timezone: GMT
+openmeteo_training_start_date: "2023-01-01"
+
+heat_risk_cutoffs:
+  - "09:00"
+  - "10:00"
+  - "11:00"
+  - "12:00"
+  - "13:00"
+  - "14:00"
+  - "15:00"
+  - "16:00"
+heat_risk_thresholds_c:
+  - 25.0
+  - 26.0
+  - 27.0
+  - 28.0
+  - 29.0
+  - 30.0
+  - 31.0
+  - 32.0
+  - 33.0
+  - 34.0
+  - 35.0
+  - 36.0
+  - 37.0
+  - 38.0
+heat_risk_dataset_parquet: artifacts/zbaa/zbaa_heat_risk_dataset.parquet
+heat_risk_model_path: artifacts/zbaa/zbaa_heat_risk_model.joblib
+heat_risk_metrics_path: artifacts/zbaa/zbaa_heat_risk_metrics.json
+next_metar_temp_dataset_parquet: artifacts/zbaa/zbaa_next_metar_temp_dataset.parquet
+next_metar_temp_model_path: artifacts/zbaa/zbaa_next_metar_temp_model.joblib
+next_metar_temp_metrics_path: artifacts/zbaa/zbaa_next_metar_temp_metrics.json
+
+test_fraction: 0.2
+random_state: 42
+feature_missing_threshold: 0.85

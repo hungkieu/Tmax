@@ -42,6 +42,15 @@ class ProjectConfig:
     heat_risk_dataset_parquet: Path = Path("artifacts/rksi/heat_risk_dataset.parquet")
     heat_risk_model_path: Path = Path("artifacts/rksi/heat_risk_model.joblib")
     heat_risk_metrics_path: Path = Path("artifacts/rksi/heat_risk_metrics.json")
+    next_metar_temp_dataset_parquet: Path = Path(
+        "artifacts/next_metar_temp/next_metar_temp_dataset.parquet"
+    )
+    next_metar_temp_model_path: Path = Path(
+        "artifacts/next_metar_temp/next_metar_temp_model.joblib"
+    )
+    next_metar_temp_metrics_path: Path = Path(
+        "artifacts/next_metar_temp/next_metar_temp_metrics.json"
+    )
     test_fraction: float = 0.2
     random_state: int = 42
     feature_missing_threshold: float = 0.85
@@ -81,6 +90,9 @@ def load_config(path: str | Path = "configs/default.yaml") -> ProjectConfig:
         "heat_risk_dataset_parquet",
         "heat_risk_model_path",
         "heat_risk_metrics_path",
+        "next_metar_temp_dataset_parquet",
+        "next_metar_temp_model_path",
+        "next_metar_temp_metrics_path",
         "openmeteo_history_csv",
         "openmeteo_history_json",
     }

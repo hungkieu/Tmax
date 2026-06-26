@@ -163,10 +163,18 @@ produce nearly identical probabilities.
 heat_risk_dataset_parquet: artifacts/rjtt/rjtt_heat_risk_dataset.parquet
 heat_risk_model_path: artifacts/rjtt/rjtt_heat_risk_model.joblib
 heat_risk_metrics_path: artifacts/rjtt/rjtt_heat_risk_metrics.json
+next_metar_temp_dataset_parquet: artifacts/next_metar_temp/next_metar_temp_dataset.parquet
+next_metar_temp_model_path: artifacts/next_metar_temp/next_metar_temp_model.joblib
+next_metar_temp_metrics_path: artifacts/next_metar_temp/next_metar_temp_metrics.json
 ```
 
 Use station-specific paths. If two configs share the same model or metrics
 path, training one station can overwrite the other station's artifacts.
+
+The `next_metar_temp_*` paths are for the separate 1h next-METAR integer
+temperature model. They are intentionally separate from `heat_risk_*` artifacts.
+If you want one next-METAR model per station, override these paths in each
+station YAML.
 
 Validation also writes files next to `heat_risk_metrics_path`, using the same
 stem:

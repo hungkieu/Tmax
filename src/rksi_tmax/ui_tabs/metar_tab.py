@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import datetime, timezone
 
+import pandas as pd
 import streamlit as st
 
 from rksi_tmax.config import ProjectConfig
@@ -26,53 +27,79 @@ def render(config: ProjectConfig, config_options: list[ConfigOption]) -> None:
         for label in selected_labels
     ]
     selected_stations = [selected_config.station for selected_config in selected_configs]
-    hours = st.number_input("Lookback hours", min_value=1, max_value=168, value=24, step=1)
-    metar_file = st.text_input("METAR file", value="metar-ui.txt")
-    reference_date = st.date_input("Reference date", value=date.today())
+    with st.form("live-data-update-form"):
+        columns = st.columns([1, 1, 2, 1])
+        hours = columns[0].number_input("Lookback hours", min_value=1, max_value=168, value=24, step=1)
+        reference_date = columns[1].date_input(
+            "Reference UTC date",
+            value=datetime.now(timezone.utc).date(),
+        )
+        metar_file = columns[2].text_input("METAR file", value="data/shared/metar-ui.txt")
+        update_openmeteo = columns[3].checkbox("Open-Meteo", value=True)
+        submitted = st.form_submit_button("Update live data", type="primary", use_container_width=True)
 
-    selected_actions = st.columns(3)
-    if selected_actions[0].button("Fetch METAR", use_container_width=True):
-        if not selected_stations:
-            st.warning("Select at least one location.")
-            return
-        try:
-            with st.spinner("Fetching METAR..."):
-                result = metar_service.fetch_metar_for_stations(selected_stations, int(hours), metar_file)
-        except Exception as exc:
-            _render_workflow_error("Fetch METAR failed", exc)
-        else:
-            st.success(f"Fetched {result['lines']} METAR lines.")
-            render_json("Fetch result", result)
-
-    if selected_actions[1].button("Import + DB", use_container_width=True):
+    if submitted:
         if not selected_configs:
             st.warning("Select at least one location.")
             return
         try:
-            with st.spinner("Importing station-scoped METAR for selected locations..."):
-                result = metar_service.import_many_station_metars(
+            with st.spinner("Fetching METAR, importing DB, and updating Open-Meteo..."):
+                result = metar_service.update_live_data(
                     selected_configs,
-                    metar_file,
-                    reference_date,
+                    hours=int(hours),
+                    metar_path=metar_file,
+                    reference_date=reference_date,
+                    update_openmeteo=bool(update_openmeteo),
                 )
         except Exception as exc:
-            _render_workflow_error("Import METAR failed", exc)
+            _render_workflow_error("Update live data failed", exc)
         else:
-            st.success(f"Inserted {result['inserted']} rows across {len(selected_configs)} locations.")
-            render_json("Import result", result)
+            _render_live_update_result(result)
 
-    if selected_actions[2].button("Sync DuckDB", use_container_width=True):
-        if not selected_configs:
-            st.warning("Select at least one location.")
-            return
-        try:
-            with st.spinner("Syncing DuckDB for selected locations..."):
-                result = metar_service.sync_many_databases(selected_configs)
-        except Exception as exc:
-            _render_workflow_error("Sync DuckDB failed", exc)
-        else:
-            st.success(f"Synced {len(selected_configs)} location configs.")
-            render_json("Sync result", result)
+    with st.expander("Manual actions", expanded=False):
+        selected_actions = st.columns(3)
+        if selected_actions[0].button("Fetch METAR", use_container_width=True):
+            if not selected_stations:
+                st.warning("Select at least one location.")
+                return
+            try:
+                with st.spinner("Fetching METAR..."):
+                    result = metar_service.fetch_metar_for_stations(selected_stations, int(hours), metar_file)
+            except Exception as exc:
+                _render_workflow_error("Fetch METAR failed", exc)
+            else:
+                st.success(f"Fetched {result['lines']} METAR lines.")
+                render_json("Fetch result", result)
+
+        if selected_actions[1].button("Import + DB", use_container_width=True):
+            if not selected_configs:
+                st.warning("Select at least one location.")
+                return
+            try:
+                with st.spinner("Importing station-scoped METAR for selected locations..."):
+                    result = metar_service.import_many_station_metars(
+                        selected_configs,
+                        metar_file,
+                        reference_date,
+                    )
+            except Exception as exc:
+                _render_workflow_error("Import METAR failed", exc)
+            else:
+                st.success(f"Inserted {result['inserted']} rows across {len(selected_configs)} locations.")
+                render_json("Import result", result)
+
+        if selected_actions[2].button("Sync DuckDB", use_container_width=True):
+            if not selected_configs:
+                st.warning("Select at least one location.")
+                return
+            try:
+                with st.spinner("Syncing DuckDB for selected locations..."):
+                    result = metar_service.sync_many_databases(selected_configs)
+            except Exception as exc:
+                _render_workflow_error("Sync DuckDB failed", exc)
+            else:
+                st.success(f"Synced {len(selected_configs)} location configs.")
+                render_json("Sync result", result)
 
     st.divider()
     st.caption("Verification")
@@ -90,6 +117,37 @@ def render(config: ProjectConfig, config_options: list[ConfigOption]) -> None:
             render_json("Database status", status)
             if latest:
                 render_json("Latest observation", latest)
+
+
+def _render_live_update_result(result: dict[str, object]) -> None:
+    fetch = result.get("fetch", {})
+    import_result = result.get("import", {})
+    station_rows = result.get("station_rows", [])
+    st.success(
+        "Live data update finished: "
+        f"{fetch.get('lines', 0)} METAR lines fetched, "
+        f"{import_result.get('inserted', 0)} CSV rows inserted, "
+        f"{import_result.get('db_inserted', 0)} DB rows inserted."
+    )
+    render_status_metrics(
+        {
+            "Fetched lines": fetch.get("lines", 0),
+            "CSV inserted": import_result.get("inserted", 0),
+            "DB inserted": import_result.get("db_inserted", 0),
+            "Stations": len(result.get("stations", [])),
+        }
+    )
+    warnings = result.get("warnings", [])
+    for warning in warnings:
+        st.warning(str(warning))
+    if station_rows:
+        st.caption("Update coverage by location")
+        st.dataframe(
+            pd.DataFrame(station_rows),
+            hide_index=True,
+            use_container_width=True,
+        )
+    render_json("Live update details", result)
 
 
 def _render_workflow_error(title: str, exc: Exception) -> None:

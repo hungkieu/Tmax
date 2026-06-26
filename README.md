@@ -12,6 +12,10 @@ The operational forecast answers:
 - short future temperature curve through the next 3 hours;
 - whether the next cutoff update is worth running.
 
+The repo also includes a separate next-METAR nowcast model for predicting the
+integer Celsius temperature near one hour after the latest METAR, with
+probabilities for exact whole-degree outcomes and `-1/0/+1 C` movement.
+
 `predicted_tmax_c` is the operational forecast from the method selected by
 validation. Locations with Open-Meteo coordinates can use M3 API forecast
 features; reports show both the raw Open-Meteo Tmax and the M3 corrected Tmax when available. Thermal
@@ -192,9 +196,13 @@ uv run rksi-ui
 The UI lets you choose a YAML config/location, then use three tabs:
 
 - `Locations`: create a new station YAML config, optional empty ASOS CSV header, and Open-Meteo API coordinates/cache paths.
-- `METAR`: fetch station METAR, import station-scoped rows, sync DuckDB, and verify latest observations.
+- `METAR`: one-click live update for selected locations: fetch METAR, import
+  station-scoped rows into DuckDB, prepare daily Open-Meteo cache, and show
+  update coverage/missing-data status.
 - `Train / Validate`: prepare Open-Meteo M3 cache, build the heat-risk dataset, train, validate, and inspect metrics/artifacts.
 - `Predict`: choose latest database observation, config default cutoff, or a custom cutoff; choose Auto/M1/M3 when supported; then generate the explanation and structured JSON output.
+- `Next METAR`: predict the integer Celsius temperature near the next 1h METAR
+  from the latest updated data, with whole-degree probabilities.
 
 The sidebar also has a `Delete location config` expander. It deletes only the selected YAML config after station-code confirmation; CSV, DuckDB rows, and model artifacts are kept.
 
@@ -222,6 +230,7 @@ config, or updating Open-Meteo M3 cache, see
 - [CLI Reference](docs/cli-reference.md)
 - [Configuration Guide](docs/configuration.md)
 - [Heat-Risk Prediction Guide](docs/predict-heat-risk.md)
+- [Next-METAR 1h Integer Temperature Model](docs/next-metar-temp.md)
 - [Daily Tmax Expert Report](docs/daily-tmax-expert-report.md)
 
 For adding a new location, start with

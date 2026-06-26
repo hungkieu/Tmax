@@ -15,6 +15,7 @@ from rksi_tmax.ui_tabs import (
     create_location_tab,
     location_tab,
     metar_tab,
+    next_metar_tab,
     predict_tab,
     train_tab,
 )
@@ -57,7 +58,7 @@ def main() -> None:
                 st.rerun()
 
     def operations_page() -> None:
-        labels = ["Locations", "METAR", "Train / Validate", "Predict"]
+        labels = ["Locations", "METAR", "Train / Validate", "Predict", "Next METAR"]
         tabs = st.tabs(labels)
         tab_by_label = dict(zip(labels, tabs))
 
@@ -70,6 +71,8 @@ def main() -> None:
             train_tab.render(config)
         with tab_by_label["Predict"]:
             predict_tab.render(config)
+        with tab_by_label["Next METAR"]:
+            next_metar_tab.render(config)
         render_json("Active config", config_service.summarize_config(config, selected.path))
 
     def create_location_page() -> None:

@@ -14,6 +14,7 @@ uv run <command> [options]
 - [DuckDB Commands](#duckdb-commands)
 - [Open-Meteo Commands](#open-meteo-commands)
 - [Heat-Risk Model Commands](#heat-risk-model-commands)
+- [Next-METAR Temperature Commands](#next-metar-temperature-commands)
 - [Prediction Command](#prediction-command)
 - [Common Daily Recipes](#common-daily-recipes)
 
@@ -279,6 +280,67 @@ Options:
 Prediction does not require rebuilding the full dataset. It builds one feature
 row directly from the configured data source when `--dataset` is omitted or
 does not contain the requested row.
+
+## Next-METAR Temperature Commands
+
+These commands train and run the separate model that predicts the integer
+Celsius temperature in the METAR nearest `+60 minutes` from the latest/current
+METAR observation.
+
+### `rksi-build-next-metar-temp-dataset`
+
+```powershell
+uv run rksi-build-next-metar-temp-dataset --config configs/default.yaml
+```
+
+Options:
+
+| Option | Meaning |
+|---|---|
+| `--config PATH` | Station config. Default `configs/default.yaml`. |
+| `--input-csv PATH` | Override config `input_csv`. |
+| `--output PATH` | Override config next-METAR dataset parquet path. |
+
+### `rksi-train-next-metar-temp`
+
+```powershell
+uv run rksi-train-next-metar-temp --config configs/default.yaml
+```
+
+Writes the model and metrics to the `next_metar_temp_*` paths in the config.
+Old `artifacts/next_metar_temp` files are not reused unless they contain the
+new v3 feature set.
+
+### `rksi-validate-next-metar-temp`
+
+```powershell
+uv run rksi-validate-next-metar-temp --config configs/default.yaml
+```
+
+Reports exact integer accuracy, within-1C accuracy, MAE, bias, delta/direction
+accuracy, and persistence baseline.
+
+### `rksi-predict-next-metar-temp`
+
+```powershell
+uv run rksi-predict-next-metar-temp --config configs/default.yaml
+uv run rksi-predict-next-metar-temp --config configs/default.yaml --as-of-local "2026-06-26 14:30"
+uv run rksi-predict-next-metar-temp --config configs/default.yaml --fetch-openmeteo
+```
+
+Options:
+
+| Option | Meaning |
+|---|---|
+| `--config PATH` | Station config. Default `configs/default.yaml`. |
+| `--as-of-local TEXT` | Use the latest station-local observation at or before this timestamp. |
+| `--fetch-openmeteo` | Fetch/update Open-Meteo live JSON for the prediction date before predicting. |
+
+Output includes `predicted_temp_c`, `expected_temp_c`,
+`probabilities_by_temp_c`, `prob_next_temp_eq_current_minus_1c`,
+`prob_next_temp_eq_current_c`, `prob_next_temp_eq_current_plus_1c`,
+`prob_next_temp_le_current_minus_1c`, and
+`prob_next_temp_ge_current_plus_1c`.
 
 ## Common Daily Recipes
 

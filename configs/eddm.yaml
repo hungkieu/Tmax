@@ -31,6 +31,9 @@ heat_risk_thresholds_c:
 heat_risk_dataset_parquet: artifacts/eddm/eddm_heat_risk_dataset.parquet
 heat_risk_model_path: artifacts/eddm/eddm_heat_risk_model.joblib
 heat_risk_metrics_path: artifacts/eddm/eddm_heat_risk_metrics.json
+next_metar_temp_dataset_parquet: artifacts/eddm/eddm_next_metar_temp_dataset.parquet
+next_metar_temp_model_path: artifacts/eddm/eddm_next_metar_temp_model.joblib
+next_metar_temp_metrics_path: artifacts/eddm/eddm_next_metar_temp_metrics.json
 test_fraction: 0.2
 random_state: 42
 feature_missing_threshold: 0.85

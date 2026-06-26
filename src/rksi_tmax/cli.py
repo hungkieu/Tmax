@@ -18,6 +18,12 @@ from rksi_tmax.heat_risk import (
 )
 from rksi_tmax.metar_import import import_metar_file
 from rksi_tmax.metar_import import fetch_metar_text
+from rksi_tmax.next_metar_temp import (
+    build_next_metar_temp_dataset,
+    predict_next_metar_temp,
+    train_next_metar_temp_model,
+    validate_next_metar_temp_model,
+)
 from rksi_tmax.services.metar_service import import_many_station_metars
 from rksi_tmax.services.training_service import (
     prepare_openmeteo_daily_data,
@@ -145,6 +151,65 @@ def validate_heat_risk_main() -> None:
     config = load_config(args.config)
     report = validate_heat_risk_model(config)
     print(json.dumps(report["summary"], indent=2))
+
+
+def build_next_metar_temp_dataset_main() -> None:
+    parser = argparse.ArgumentParser(description="Build next-METAR integer temperature table.")
+    parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--input-csv")
+    parser.add_argument("--output")
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    dataset = build_next_metar_temp_dataset(config, input_csv=args.input_csv, output_parquet=args.output)
+    print(
+        f"Wrote {len(dataset)} next-METAR temperature rows to "
+        f"{args.output or config.next_metar_temp_dataset_parquet}"
+    )
+
+
+def train_next_metar_temp_main() -> None:
+    parser = argparse.ArgumentParser(description="Train next-METAR integer temperature model.")
+    parser.add_argument("--config", default="configs/default.yaml")
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    metrics = train_next_metar_temp_model(config)
+    print(json.dumps(metrics, indent=2, ensure_ascii=False))
+
+
+def validate_next_metar_temp_main() -> None:
+    parser = argparse.ArgumentParser(description="Validate next-METAR integer temperature model.")
+    parser.add_argument("--config", default="configs/default.yaml")
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    report = validate_next_metar_temp_model(config)
+    print(json.dumps(report["summary"], indent=2, ensure_ascii=False))
+
+
+def predict_next_metar_temp_main() -> None:
+    _configure_stdout()
+    parser = argparse.ArgumentParser(description="Predict integer temperature for the METAR near +1h.")
+    parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument(
+        "--as-of-local",
+        help="Use latest observation at or before this station-local timestamp. Defaults to latest METAR.",
+    )
+    parser.add_argument(
+        "--fetch-openmeteo",
+        action="store_true",
+        help="Fetch/update the Open-Meteo live JSON for the prediction date before predicting.",
+    )
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    result = predict_next_metar_temp(
+        config,
+        as_of_local=args.as_of_local,
+        fetch_openmeteo=args.fetch_openmeteo,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
 def predict_heat_risk_main() -> None:
